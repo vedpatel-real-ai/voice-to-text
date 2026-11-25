@@ -1,0 +1,43 @@
+{
+  "model": "mlx-community/whisper-small.en-mlx",
+  "samples": [
+    {
+      "name": "short",
+      "audio_seconds": 1.768,
+      "inference_seconds": 0.7061147920030635,
+      "realtime_factor": 0.39938619457186847,
+      "wer": 0.3333333333333333,
+      "reference": "Schedule a meeting at three thirty.",
+      "hypothesis": "Schedule a meeting at 3.30."
+    },
+    {
+      "name": "technical",
+      "audio_seconds": 3.726,
+      "inference_seconds": 0.23907633300404996,
+      "realtime_factor": 0.06416434058079709,
+      "wer": 0.0,
+      "reference": "Create a pull request for the WebSocket API and assign it to Ved.",
+      "hypothesis": "Create a pull request for the WebSocket API and assign it to Ved."
+    },
+    {
+      "name": "numbers",
+      "audio_seconds": 6.194,
+      "inference_seconds": 0.29939829200156964,
+      "realtime_factor": 0.048336824669287966,
+      "wer": 0.5882352941176471,
+      "reference": "On September twenty eighth, order twelve USB C adapters for forty nine dollars and ninety five cents.",
+      "hypothesis": "On September 28, order 12 USB-C adapters for $49.95."
+    },
+    {
+      "name": "long",
+      "audio_seconds": 13.943,
+      "inference_seconds": 0.6277959159924649,
+      "realtime_factor": 0.04502588510309581,
+      "wer": 0.0,
+      "reference": "Please update the Jira ticket for the Atlas deployment, check the GitHub branch, and tell Ronak that the local MLX Whisper benchmark finished without uploading audio. After that, open Visual Studio Code and review the WebSocket API changes.",
+      "hypothesis": "Please update the Jira ticket for the ATLAS deployment, check the GitHub branch, and tell Ronak that the local mlx-whisper benchmark finished without uploading audio. After that, open Visual Studio Code and review the WebSocket API changes."
+    }
+  ],
+  "cold_warmup_seconds": 0.8601676249818411,
+  "mean_wer": 0.2303921568627451
+}

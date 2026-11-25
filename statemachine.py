@@ -32,6 +32,7 @@ class Mode(Enum):
     TRANSCRIBING = "transcribing"
     DONE = "done"
     NO_SPEECH = "no_speech"
+    LOW_CONFIDENCE = "low_confidence"
     FAILED = "failed"
     PERMISSION_DENIED = "permission_denied"
     CANCELLED = "cancelled"
@@ -44,6 +45,7 @@ class Mode(Enum):
 TRANSIENT: Set[Mode] = {
     Mode.DONE,
     Mode.NO_SPEECH,
+    Mode.LOW_CONFIDENCE,
     Mode.FAILED,
     Mode.PERMISSION_DENIED,
     Mode.CANCELLED,
@@ -55,12 +57,14 @@ ALLOWED: Dict[Mode, Set[Mode]] = {
     Mode.TRANSCRIBING: {
         Mode.DONE,
         Mode.NO_SPEECH,
+        Mode.LOW_CONFIDENCE,
         Mode.FAILED,
         Mode.PERMISSION_DENIED,
         Mode.CANCELLED,
     },
     Mode.DONE: {Mode.IDLE},
     Mode.NO_SPEECH: {Mode.IDLE},
+    Mode.LOW_CONFIDENCE: {Mode.IDLE},
     Mode.FAILED: {Mode.IDLE},
     Mode.PERMISSION_DENIED: {Mode.IDLE},
     Mode.CANCELLED: {Mode.IDLE},

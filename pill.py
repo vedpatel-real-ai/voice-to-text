@@ -159,6 +159,7 @@ STYLES: Dict[Mode, Tuple[str, Tuple[float, float, float], bool]] = {
     Mode.TRANSCRIBING: ("Transcribing…", (0.62, 0.78, 1.0), True),
     Mode.DONE: ("Done", (0.45, 0.87, 0.55), False),
     Mode.NO_SPEECH: ("No speech heard", (0.98, 0.78, 0.35), False),
+    Mode.LOW_CONFIDENCE: ("Low confidence — saved", (0.95, 0.62, 0.30), False),
     Mode.FAILED: ("Transcription failed", (1.0, 0.45, 0.42), False),
     Mode.PERMISSION_DENIED: ("Grant Accessibility", (1.0, 0.45, 0.42), False),
     Mode.CANCELLED: ("Cancelled", (0.7, 0.7, 0.74), False),
@@ -166,14 +167,16 @@ STYLES: Dict[Mode, Tuple[str, Tuple[float, float, float], bool]] = {
 
 
 def icon_path() -> str:
-    return support_path("menubar-icon.png")
+    # A new filename invalidates the old cached black non-template asset.
+    return support_path("menubar-icon-white-Template.png")
 
 
 def _generate_icon(path: str) -> None:
     """Three ascending rounded bars, echoing the pill's waveform motif.
 
-    Template image (pure black on transparent) so macOS auto-adapts it to
-    light and dark menu bars.
+    White alpha-mask artwork. VoiceToText marks it as an NSImage template,
+    allowing macOS to preserve the intended bright menu-bar appearance while
+    retaining contrast when the system changes menu-bar style.
     """
     from PIL import Image, ImageDraw
 
@@ -192,7 +195,7 @@ def _generate_icon(path: str) -> None:
         draw.rounded_rectangle(
             [x0, base_y - h, x0 + bar_w, base_y],
             radius=bar_w // 2,
-            fill=(0, 0, 0, 255),
+            fill=(255, 255, 255, 255),
         )
     img.save(path)
 
@@ -243,6 +246,7 @@ class FloatingPill:
         self._accent = (1.0, 1.0, 1.0)
         self._width = PILL_MIN_WIDTH
         self._autohide_timer = None
+        self._visual_generation = 0
         try:
             self._build()
             self.available = True
@@ -565,6 +569,7 @@ class FloatingPill:
         if not self.available:
             return
 
+        self._visual_generation += 1
         self._cancel_pending_autohide()
 
         target_width = self._width_for_text(text)
@@ -572,6 +577,10 @@ class FloatingPill:
         self._set_accent(accent)
 
         if self.visible:
+            # A previous hide animation may still be interpolating alpha.
+            # A direct property write supersedes it before any resize, so
+            # stale dismissal work cannot make a new recording disappear.
+            self.panel.setAlphaValue_(1.0)
             # Already on screen — just resize in place if needed.
             self._resize(target_width)
         else:
@@ -590,7 +599,11 @@ class FloatingPill:
                 log.exception("pill.show: failed to prime initial frame")
                 end_rect = self._rect_for(target_width, PILL_BOTTOM_MARGIN)
 
-            self._animate(PILL_REVEAL_SECONDS, EASE_OUT, frame=end_rect, alpha=1.0)
+            # Visibility feedback is immediate; only the small positional
+            # rise is animated. This also deterministically cancels a stale
+            # fade-out from the preceding session.
+            self.panel.setAlphaValue_(1.0)
+            self._animate(PILL_REVEAL_SECONDS, EASE_OUT, frame=end_rect)
 
             try:
                 log.info(
@@ -611,6 +624,7 @@ class FloatingPill:
         self._cancel_pending_autohide()
         if not self.available or not self.visible:
             return
+        self._visual_generation += 1
         self.visible = False
         try:
             f = self.panel.frame()

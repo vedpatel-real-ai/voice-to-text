@@ -1,4 +1,20 @@
-# VoiceToText 2.0 — audit implementation
+# VoiceToText change history
+
+> Historical note: the material below describes 2.0 and is not current
+> installation or verification guidance. See `README.md` and
+> `PRODUCTION_AUDIT.md` for VoiceToText 3.0.
+
+## 3.0.0 — native hotkey/insertion and serialized inference
+
+- Replaced pynput hotkey/output paths with native Quartz.
+- Added session generations and serialized audio control.
+- Serialized all MLX calls and made model changes generation-aware.
+- Added adaptive frame-based speech detection and device-rate fallback.
+- Added lossless, change-count-guarded pasteboard restoration.
+- Added complete permission classification, build fingerprinting, smoke tests,
+  26 automated tests, pinned Python 3.12 dependencies, and one installer.
+
+## VoiceToText 2.0 — audit implementation
 
 Every item in `voice-to-text-engineering-audit.md` §16, plus one crash bug
 the audit missed. File layout went from one 575-line file to eight modules;

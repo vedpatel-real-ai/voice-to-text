@@ -40,36 +40,48 @@ def support_path(*parts: str) -> str:
 
 
 DEFAULTS: Dict[str, Any] = {
+    "settings_schema_version": 4,
     # ── Audio ────────────────────────────────────────────────────
     "sample_rate": 16000,
     "min_recording_seconds": 0.3,
     "max_recording_seconds": 60.0,
-    # RMS below this over the whole (trimmed) buffer means "no speech".
-    # Whisper hallucinates confident-sounding text from near-silence, so
-    # we gate before the model call rather than filtering after (§4/§5).
-    "silence_rms_threshold": 0.006,
-    "trim_threshold": 0.01,
+    "max_transcribe_seconds": 45.0,
+    "input_device": None,
+    "audio_blocksize": 0,
+    # These are conservative frame-energy floors, not whole-recording RMS
+    # cutoffs. The previous 0.006/0.010 settings rejected valid speech from
+    # the built-in MacBook microphone before Whisper ever saw it.
+    "silence_rms_threshold": 0.0008,
+    "trim_threshold": 0.0010,
+    "vad_frame_ms": 30,
+    "vad_padding_ms": 220,
+    "vad_min_speech_ms": 120,
+    "normalize_audio": False,
     # ── Model ────────────────────────────────────────────────────
-    "model": "mlx-community/whisper-medium.en-mlx",
+    # small.en was 2-4x faster than medium.en in the local benchmark while
+    # producing the same semantic content. It is the daily-use latency default.
+    "model": "mlx-community/whisper-small.en-mlx",
     "language": None,
+    # A scalar zero disables Whisper's multi-temperature retry ladder. Those
+    # retries caused 6-15 second latency spikes on short/noisy recordings.
+    "decode_temperature": 0.0,
     # Whisper's own confidence signals. A result worse than these is
     # treated as garbage rather than typed blindly (§5).
     "max_no_speech_prob": 0.6,
     "min_avg_logprob": -1.0,
     # ── Hotkey ───────────────────────────────────────────────────
     "hotkey_vk": 58,  # kVK_Option — LEFT Option specifically
-    # pynput sometimes reports left Option as the generic Key.alt. Matching
-    # it means RIGHT Option can also start a recording, which breaks
-    # alternate-character entry on non-US layouts. Off by default; the
-    # first time it *would* have matched we log once so you can tell
-    # whether your machine actually needs it (§3).
-    "allow_bare_alt": False,
+    # "hold": Option down starts, Option up stops/transcribes.
+    # "toggle": each Option down alternates start and stop/transcribe.
+    "option_key_mode": "hold",
+    # Physical Right Option (keycode 61) is deliberately opt-in.
+    "allow_right_option": False,
     # ── Injection ────────────────────────────────────────────────
     # "type"  — synthesized keystrokes (works in secure/password fields)
     # "paste" — clipboard + Cmd-V (fast, but blocked in secure fields)
     # "auto"  — type short text, paste anything over paste_threshold (§6)
-    "injection_mode": "auto",
-    "paste_threshold_chars": 140,
+    "injection_mode": "paste",
+    "paste_restore_seconds": 0.35,
     "append_trailing_space": True,
     # Abort injection if the user alt-tabbed away mid-transcription
     # instead of spraying text into the wrong window (§6).
@@ -78,6 +90,7 @@ DEFAULTS: Dict[str, Any] = {
     # 80ms == 12.5fps, visibly steppy next to Wispr Flow. 33ms == ~30fps
     # and costs nothing measurable (§9).
     "refresh_interval": 0.033,
+    "idle_refresh_interval": 0.5,
     "pill_enabled": True,
     "sound_enabled": True,
     "history_size": 25,
@@ -86,6 +99,7 @@ DEFAULTS: Dict[str, Any] = {
     # because fewer than history_size things were said since.
     "history_max_age_hours": 8,
     "show_latency": True,
+    "permission_prompt_build": "",
     # ── Diagnostics ──────────────────────────────────────────────
     "debug": False,
 }
@@ -105,6 +119,7 @@ class Settings:
         return self._path
 
     def load(self) -> None:
+        migrated = False
         try:
             with open(self._path, "r", encoding="utf-8") as fh:
                 stored = json.load(fh)
@@ -115,11 +130,42 @@ class Settings:
                     for key, value in stored.items():
                         if key in DEFAULTS:
                             self._values[key] = value
+                    schema = int(stored.get("settings_schema_version", 1))
+                    if schema < 2:
+                        # Version 1 persisted the original whole-buffer silence
+                        # thresholds. They are incompatible with the frame-based
+                        # VAD and caused observed RMS 0.002 speech to be dropped.
+                        for key in (
+                            "silence_rms_threshold",
+                            "trim_threshold",
+                            "vad_frame_ms",
+                            "vad_padding_ms",
+                            "vad_min_speech_ms",
+                        ):
+                            self._values[key] = DEFAULTS[key]
+                        if self._values.get("injection_mode") == "auto":
+                            self._values["injection_mode"] = "paste"
+                        self._values["settings_schema_version"] = 2
+                        migrated = True
+                    if schema < 3:
+                        # Version 3 is the explicit low-latency profile requested
+                        # for push-to-talk dictation.
+                        if self._values.get("model") == "mlx-community/whisper-medium.en-mlx":
+                            self._values["model"] = DEFAULTS["model"]
+                        self._values["decode_temperature"] = DEFAULTS["decode_temperature"]
+                        self._values["settings_schema_version"] = 3
+                        migrated = True
+                    if schema < 4:
+                        self._values["option_key_mode"] = "hold"
+                        self._values["settings_schema_version"] = 4
+                        migrated = True
         except FileNotFoundError:
             pass
         except Exception:
             # A corrupt settings file must never stop the app booting.
             pass
+        if migrated:
+            self.save()
 
     def save(self) -> None:
         with self._lock:

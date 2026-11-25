@@ -1,5 +1,9 @@
 # voice_to_text.py — Implementation State
 
+> **Historical 2.x document.** It records earlier work but is not evidence of
+> the current implementation. Its listener-restart claims did not match the
+> supplied source. Current status is in `PRODUCTION_AUDIT.md`.
+
 **Tracks:** fixes applied against `voice-to-text-engineering-audit.md`
 **Last updated:** 2026-07-30
 **Status:** Round 4 fixes a *confirmed* crash from a real faulthandler dump

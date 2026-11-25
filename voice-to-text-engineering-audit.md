@@ -1,5 +1,8 @@
 # Engineering Audit — `voice_to_text.py`
 
+> **Historical input audit.** Retained as evidence only. VoiceToText 3.0 fixes
+> and verification results are documented in `PRODUCTION_AUDIT.md`.
+
 **Scope reviewed:** `voice_to_text.py` (575 lines), `setup.py`, `install_app.sh`. The `venv/` and `dist/` contents in the zip are vendored dependencies and a build artifact, not reviewed as source.
 
 ## 0. Scope correction (important)
