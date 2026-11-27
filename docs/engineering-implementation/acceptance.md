@@ -1,6 +1,6 @@
 # Physical Mac acceptance and release readiness
 
-The operator observed physical dictation in a ChatGPT input field on the diagnostic build. The clean 3.0.2 build still needs the full manual matrix. See the [verification record](../TESTING.md#physical-acceptance) for results and remaining coverage.
+The operator confirmed successful normal-use dictation on installed 3.0.2 (`3dfd80c4e277b3d9`) and reported that the earlier Option-key and erroneous private-field issues were resolved in that usage. The full physical acceptance matrix remains open. [Verification record](../TESTING.md#physical-acceptance)
 
 Use a disposable macOS account with synthetic clipboard values and private, unsent test fields. Record the candidate fingerprint, macOS version, permission state, intended field, observed output and verdict for each case. Use the read-only bundle smoke probe before starting. Avoid personal messages, real passwords and shell command prompts during input trials.
 
@@ -19,7 +19,7 @@ Use a disposable macOS account with synthetic clipboard values and private, unse
 
 Native login job restoration was simulated in regression tests and the bundle was signed and bootstrapped without starting dictation in a disposable home. Ad-hoc signature verification is a local check. Developer ID distribution and notarization are outside this release candidate.
 
-Promotion to `main` requires the physical acceptance cases and the portable and macOS GitHub Actions jobs to pass for the candidate. Use sanitized case verdicts when documenting the acceptance run.
+The maintainer approved 3.0.2 source publication based on successful normal-use dictation and passing automated tests. The cases below remain available for follow-up verification. Use sanitized case verdicts when documenting a run.
 
 ## Operator run for candidate 3dfd80c4e277b3d9
 
@@ -42,4 +42,4 @@ Use one line per case in the following format. Keep raw logs, recordings, clipbo
 Case | build | OS/app version | input | model | insertion mode | attempts | observed result | pass/fail/untested/unavailable | latency if measured
 ```
 
-Return the first failing case with its synthetic action sequence, app version and observed result. A wrong destination, protected-data exposure, stuck capture or unrecoverable install blocks promotion. Review individual app compatibility and physical latency before advertising support.
+Return the first failing case with its synthetic action sequence, app version and observed result. Treat a wrong destination, protected-data exposure, stuck capture or unrecoverable install as a failed case. Review individual app compatibility and physical latency before advertising support.

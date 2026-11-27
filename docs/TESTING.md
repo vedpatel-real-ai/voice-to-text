@@ -39,10 +39,20 @@ With the environment variable unset, the installed-app test skips by design. Nam
 
 ## Physical acceptance
 
-On a diagnostic build, the operator used Left Option and observed dictated text in a ChatGPT input field after the earlier “Private or unverified field” error was resolved. This is an observed foreground result for one field on that diagnostic build.
+| Evidence | Result |
+| --- | --- |
+| **Operator manual use on installed 3.0.2** (`3dfd80c4e277b3d9`) | Pass for the operator’s normal use. Dictation worked, including the Option-key workflow. The earlier erroneous “Private or unverified field” rejection did not recur in the operator’s usage. |
+| **Earlier diagnostic build** | Physical dictation succeeded in one ChatGPT input field using Left Option. |
 
-The full clean-build matrix for **ChatGPT, Chrome, Safari, VS Code, Notes and TextEdit** remains open. The available record does not establish compatibility across both insertion modes, field and selection changes, foreground Unicode fidelity or physical release-to-visible latency in those apps. External audio devices and disconnect recovery, permission denial and regrant, sleep/wake, a fresh login and a workday soak also remain open. [Physical test procedure](engineering-implementation/acceptance.md)
+The full clean-build matrix remains open. The operator’s report leaves these cases unverified:
+
+- ChatGPT, Chrome, Safari, VS Code, Notes and TextEdit across the prescribed fields and both insertion modes, including field and selection changes, secure fields, Unicode, clipboard restoration and Undo.
+- Systematic Hold and Toggle tests, both Option keys, and cancellation and recovery edge cases.
+- The prescribed built-in microphone trials, external microphones and disconnect recovery, and permission denial and regrant.
+- Sleep/wake and related macOS lifecycle cases, fresh login and upgrade behavior, a workday soak, and physical release-to-visible latency.
+
+[Physical acceptance procedure](engineering-implementation/acceptance.md)
 
 ## Hosted CI
 
-The [Verify workflow](../.github/workflows/verify.yml) defines portable Ubuntu and arm64 macOS jobs. The [candidate’s Actions runs](https://github.com/vedpatel-real-ai/voice-to-text/actions/workflows/verify.yml?query=branch%3Arelease%2F3.0.2) track both results for each pushed commit. Compare the run’s commit SHA with the candidate you are reviewing. The hosted jobs use controlled tests. The installed-app check requires an already-running local installation and is opt-in. Promotion to `main` requires both hosted jobs and the physical acceptance matrix to pass.
+The [Verify workflow](../.github/workflows/verify.yml) runs portable Ubuntu and arm64 macOS jobs. Both jobs passed for the 3.0.2 candidate. The [Actions runs on `main`](https://github.com/vedpatel-real-ai/voice-to-text/actions/workflows/verify.yml?query=branch%3Amain) show the results for each published commit. The hosted jobs use controlled tests. The installed-app check requires an already-running local installation and is opt-in.

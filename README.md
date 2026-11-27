@@ -30,8 +30,6 @@ Use an Apple Silicon Mac with **macOS 26 or later**, Homebrew's native framework
 brew install python@3.12
 git clone https://github.com/vedpatel-real-ai/voice-to-text.git
 cd voice-to-text
-# While 3.0.2 is under review, switch to its candidate branch before installing.
-git switch release/3.0.2
 ./install.sh
 ```
 
@@ -157,7 +155,7 @@ Fast paste temporarily stages text on the system clipboard. It restores readable
 
 ## Testing
 
-The clean 3.0.2 runtime passed **140 automated tests** locally, including the opt-in installed-app check. Coverage was **55.7% statements / 48.7% branches** across the top-level Python modules and **83.1% / 77.4%** in destination validation and insertion. The suite exercises session cancellation, audio handling, model and vocabulary behavior, native accessibility and Unicode events, clipboard faults, and installer rollback. Physical dictation into a ChatGPT input field was observed on a diagnostic build. The clean build’s six-app manual matrix remains open. See [hosted CI](docs/TESTING.md#hosted-ci) for the checks on the candidate.
+The clean 3.0.2 runtime passed **140 automated tests** locally, including the opt-in installed-app check. Coverage was **55.7% statements / 48.7% branches** across the top-level Python modules and **83.1% / 77.4%** in destination validation and insertion. The suite exercises session cancellation, audio handling, model and vocabulary behavior, native accessibility and Unicode events, clipboard faults, and installer rollback. The operator confirmed that dictation works during normal use on installed 3.0.2 and that the earlier Option-key and erroneous private-field issues are resolved in that usage. The full physical acceptance matrix remains open. [Verification record](docs/TESTING.md)
 
 Run the suite on macOS from a separate development environment with the checked-in test dependencies.
 
