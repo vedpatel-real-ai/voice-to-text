@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from config import DEFAULTS
 from hotkey import HotkeyAction, NativeHotkeyListener
-from injection import InjectResult, Injector, PasteboardSnapshot
+from injection import Destination, InjectResult, Injector, PasteboardSnapshot
 from permissions import PermissionState
 
 
@@ -89,17 +89,17 @@ def test_insertion_fails_before_claiming_success_when_event_posting_denied(monke
     injector = Injector(FakeSettings())
     monkeypatch.setattr("injection.accessibility_state", lambda: PermissionState.DENIED)
     monkeypatch.setattr("injection.event_posting_state", lambda: PermissionState.DENIED)
-    result = injector._inject("hello ", "paste")
+    result = injector._deliver("hello", Destination(1, 2, 3, (0, 0)), lambda: True)
     assert result.result is InjectResult.PERMISSION_DENIED
     assert "Accessibility" in result.detail
 
 
 def test_focus_change_blocks_insertion(monkeypatch):
     injector = Injector(FakeSettings())
-    monkeypatch.setattr("injection.frontmost_app", lambda: (22, "Other"))
+    monkeypatch.setattr("injection.capture_destination", lambda: Destination(22, 1, 2, (0, 0)))
     result = injector.inject("private transcript", expected_pid=11)
     assert result.result is InjectResult.FOCUS_CHANGED
-    assert injector.last_text == ""
+    assert not injector.undo_last()
 
 
 class FakeItem:

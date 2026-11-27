@@ -14,7 +14,7 @@ MODE="${1:-install}"
 
 write_launch_agent() {
   mkdir -p "$HOME/Library/LaunchAgents" "$SUPPORT_DIR"
-  /usr/bin/python3 - "$PLIST_PATH" "$EXECUTABLE" "$SUPPORT_DIR" <<'PY'
+  /usr/bin/python3 - "$1" "$EXECUTABLE" "$SUPPORT_DIR" <<'PY'
 import plistlib, sys
 path, executable, support = sys.argv[1:]
 payload = {
@@ -33,40 +33,15 @@ with open(path, "wb") as stream:
 PY
 }
 
-stop_existing() {
-  launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
-  if [ -x "$EXECUTABLE" ]; then
-    while IFS= read -r process_id; do
-      [ -n "$process_id" ] && kill "$process_id" 2>/dev/null || true
-    done < <(pgrep -f "^${EXECUTABLE}$" || true)
-  fi
-}
-
-if [ "$MODE" = "--enable-login" ]; then
-  if [ ! -x "$EXECUTABLE" ]; then
-    echo "VoiceToText is not installed. Run ./install.sh first."
-    exit 1
-  fi
-  # Hand ownership to launchd cleanly. Starting the job while the manually
-  # launched app still owns the single-instance lock makes the launch job
-  # exit immediately and leaves login startup looking enabled but inert.
-  stop_existing
-  write_launch_agent
-  launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
-  launchctl kickstart "gui/$(id -u)/$PLIST_LABEL"
-  echo "Login startup enabled for $APP_PATH"
-  exit 0
-fi
-
-if [ "$MODE" != "install" ]; then
-  echo "Usage: ./install.sh [--enable-login]"
-  exit 2
-fi
+case "$MODE" in
+  install|--enable-login) ;;
+  *) echo "Usage: ./install.sh [--enable-login]" >&2; exit 2 ;;
+esac
 
 required=(
   voice_to_text.py audio.py buildinfo.py config.py diagnostics.py hotkey.py
   injection.py permissions.py pill.py singleinstance.py statemachine.py
-  transcription.py setup.py requirements.lock smoketest.py
+  transcription.py setup.py prepare_bundle.py requirements.lock bootstrap.lock build.lock smoketest.py
 )
 for name in "${required[@]}"; do
   if [ ! -f "$SOURCE_DIR/$name" ]; then
@@ -100,66 +75,141 @@ fi
 # The selected interpreter is verified non-Conda. Remove ambient activation
 # variables so they cannot leak into venv creation or dependency installation.
 unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER PYTHONPATH PYTHONHOME
-
-stop_existing
-mkdir -p "$SUPPORT_DIR" "$HOME/Applications"
-staging="$SUPPORT_DIR/.runtime-staging.$$"
-app_staging="$HOME/Applications/.VoiceToText.app.staging.$$"
-runtime_previous="$SUPPORT_DIR/.runtime-previous"
-runtime_swapped=0
-install_complete=0
-cleanup_staging() {
-  rm -rf "$staging" "$app_staging"
-  if [ "$runtime_swapped" -eq 1 ] && [ "$install_complete" -eq 0 ]; then
-    rm -rf "$RUNTIME_DIR"
-    [ -d "$runtime_previous" ] && mv "$runtime_previous" "$RUNTIME_DIR"
-  fi
-}
-trap cleanup_staging EXIT
-mkdir -p "$staging"
-for name in "${required[@]}" requirements-dev.lock; do
-  [ -f "$SOURCE_DIR/$name" ] && /usr/bin/ditto "$SOURCE_DIR/$name" "$staging/$name"
-done
-
-rm -rf "$runtime_previous"
-if [ -d "$RUNTIME_DIR" ]; then
-  mv "$RUNTIME_DIR" "$runtime_previous"
-fi
-mv "$staging" "$RUNTIME_DIR"
-staging="$SUPPORT_DIR/.staging-consumed"
-runtime_swapped=1
-
-"$PYTHON_BIN" -m venv "$RUNTIME_DIR/.venv"
-"$RUNTIME_DIR/.venv/bin/python" -m pip install --disable-pip-version-check --requirement "$RUNTIME_DIR/requirements.lock"
-cd "$RUNTIME_DIR"
-"$RUNTIME_DIR/.venv/bin/python" setup.py py2app -A
-if [ ! -d "$RUNTIME_DIR/dist/VoiceToText.app" ]; then
-  echo "py2app did not create VoiceToText.app"
+umask 077
+mkdir -p "$SUPPORT_DIR/releases" "$HOME/Applications"
+lock="$SUPPORT_DIR/.install-lock"
+if ! mkdir "$lock"; then
+  echo "Installation is already active or interrupted. Inspect .install-lock before retrying." >&2
   exit 1
 fi
+domain="gui/$(id -u)"
+job="$domain/$PLIST_LABEL"
+app_tmp=""
+release=""
+previous=""
+loaded=0
+manual_pid=""
+switching=0
+success=0
+new_app=0
+new_runtime=0
+new_plist=0
+new_job=0
 
-rm -rf "$app_staging"
-/usr/bin/ditto "$RUNTIME_DIR/dist/VoiceToText.app" "$app_staging"
-signing_identity="${VTT_SIGN_IDENTITY:--}"
-/usr/bin/codesign --force --deep --sign "$signing_identity" "$app_staging"
+finish() {
+  result=$?
+  trap - EXIT INT TERM HUP
+  set +e
+  rollback_ok=1
+  if [[ $success == 0 && $switching == 1 ]]; then
+    if [[ $new_job == 1 ]] && launchctl print "$job" >/dev/null 2>&1; then
+      launchctl bootout "$job" || rollback_ok=0
+    fi
+    if [[ $new_plist == 1 ]]; then rm -f "$PLIST_PATH" || rollback_ok=0; fi
+    if [[ $new_app == 1 ]]; then mv "$APP_PATH" "$app_tmp/rejected.app" || rollback_ok=0; fi
+    if [[ $new_runtime == 1 ]]; then rm -f "$RUNTIME_DIR" || rollback_ok=0; fi
+    if [[ -e "$previous/runtime" || -L "$previous/runtime" ]]; then mv "$previous/runtime" "$RUNTIME_DIR" || rollback_ok=0; fi
+    if [[ -d "$app_tmp/old.app" ]]; then mv "$app_tmp/old.app" "$APP_PATH" || rollback_ok=0; fi
+    if [[ $loaded == 1 ]] && ! launchctl print "$job" >/dev/null 2>&1; then
+      launchctl bootstrap "$domain" "$PLIST_PATH" || rollback_ok=0
+    elif [[ -n "$manual_pid" ]] && ! kill -0 "$manual_pid" 2>/dev/null; then
+      /usr/bin/open "$APP_PATH" || rollback_ok=0
+    fi
+  fi
+  if [[ $rollback_ok == 0 ]]; then
+    echo "Rollback incomplete. Preserved recovery files in $previous and $app_tmp." >&2
+    exit 1
+  fi
+  if [[ $success == 0 && -n "$release" ]]; then rm -rf "$release"; fi
+  if [[ -n "$previous" ]]; then rm -rf "$previous"; fi
+  if [[ -n "$app_tmp" ]]; then rm -rf "$app_tmp"; fi
+  rmdir "$lock"
+  exit "$result"
+}
+trap finish EXIT
+trap 'exit 1' INT TERM HUP
 
-rm -rf "$APP_PATH"
-mv "$app_staging" "$APP_PATH"
-app_staging="$HOME/Applications/.app-consumed"
-rm -rf "$runtime_previous"
-install_complete=1
-
-write_launch_agent
-echo "Installed VoiceToText to $APP_PATH"
-echo "Runtime: $RUNTIME_DIR (pinned Python 3.12 environment)"
-if [ "$signing_identity" = "-" ]; then
-  echo "Signing: ad-hoc. A Developer ID can be supplied with VTT_SIGN_IDENTITY."
+previous=$(mktemp -d "$SUPPORT_DIR/.upgrade.XXXXXX")
+app_tmp=$(mktemp -d "$HOME/Applications/.VoiceToText.XXXXXX")
+if [[ "$MODE" == install ]]; then
+  # An alias and a venv embed absolute paths. Build once at their final location.
+  release=$(mktemp -d "$SUPPORT_DIR/releases/runtime.XXXXXX")
+  for name in "${required[@]}"; do /usr/bin/ditto "$SOURCE_DIR/$name" "$release/$name"; done
+  "$PYTHON_BIN" -m venv "$release/.venv"
+  python="$release/.venv/bin/python"
+  "$python" -m pip install --disable-pip-version-check --require-hashes -r "$release/bootstrap.lock"
+  # rumps ships as source. Build it against the already verified setuptools
+  # wheel to avoid pip resolving an unpinned build-isolation dependency.
+  "$python" -m pip install --disable-pip-version-check --require-hashes -r "$release/build.lock"
+  "$python" -m pip install --disable-pip-version-check --no-build-isolation --require-hashes -r "$release/requirements.lock"
+  "$python" -m pip check
+  cd "$release"
+  "$python" setup.py py2app -A
+  candidate="$app_tmp/VoiceToText.app"
+  /usr/bin/ditto "$release/dist/VoiceToText.app" "$candidate"
+  "$python" prepare_bundle.py "$candidate"
+  identity="${VTT_SIGN_IDENTITY:--}"
+  /usr/bin/codesign --force --sign "$identity" "$candidate/Contents/MacOS/python3.12"
+  /usr/bin/codesign --force --sign "$identity" "$candidate"
+  /usr/bin/codesign --verify --strict --deep "$candidate"
+  fingerprint=$("$python" -c 'from buildinfo import source_fingerprint; print(source_fingerprint()[:16])')
+  built=$("$candidate/Contents/MacOS/VoiceToText" --check-bundle) || exit 1
+  [[ -n "$fingerprint" && "$built" == "$fingerprint" ]] || exit 1
+  ln -s "$release" "$previous/new-runtime"
 else
-  echo "Signing: $signing_identity"
+  [[ -x "$EXECUTABLE" ]] || { echo "Install VoiceToText first." >&2; exit 1; }
 fi
-echo
-echo "Launching once for permission setup..."
-/usr/bin/open "$APP_PATH"
-echo "Grant VoiceToText Microphone, Accessibility, and Input Monitoring access."
-echo "Then run: ./install.sh --enable-login"
-echo "Diagnostics: $RUNTIME_DIR/.venv/bin/python $RUNTIME_DIR/smoketest.py"
+
+if launchctl print "$job" >/dev/null 2>&1; then
+  loaded=1
+  [[ -f "$PLIST_PATH" ]] || { echo "Loaded job has no restorable plist." >&2; exit 1; }
+fi
+# Match the exact executable path even when launchd has a loaded but exited job.
+if [[ -x "$EXECUTABLE" ]]; then
+  manual_pid=$("$PYTHON_BIN" - "$EXECUTABLE" <<'PY'
+import subprocess, sys
+rows = subprocess.check_output(["/bin/ps", "-axo", "pid=,comm="], text=True)
+for row in rows.splitlines():
+    fields = row.strip().split(None, 1)
+    if len(fields) == 2 and fields[1] == sys.argv[1]:
+        print(fields[0])
+        break
+PY
+)
+fi
+switching=1
+if [[ $loaded == 1 ]]; then
+  launchctl bootout "$job"
+fi
+if [[ -n "$manual_pid" ]] && kill -0 "$manual_pid" 2>/dev/null; then
+  kill -TERM "$manual_pid" 2>/dev/null || ! kill -0 "$manual_pid" 2>/dev/null
+  for _ in {1..50}; do
+    kill -0 "$manual_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$manual_pid" 2>/dev/null; then echo "Previous app is still closing." >&2; exit 1; fi
+fi
+
+if [[ "$MODE" == install ]]; then
+  if [[ -e "$RUNTIME_DIR" || -L "$RUNTIME_DIR" ]]; then mv "$RUNTIME_DIR" "$previous/runtime"; fi
+  mv "$previous/new-runtime" "$RUNTIME_DIR"
+  new_runtime=1
+  if [[ -d "$APP_PATH" ]]; then mv "$APP_PATH" "$app_tmp/old.app"; fi
+  mv "$candidate" "$APP_PATH"
+  new_app=1
+  installed=$("$EXECUTABLE" --check-bundle) || exit 1
+  [[ "$installed" == "$fingerprint" ]] || exit 1
+fi
+if [[ "$MODE" == --enable-login && ! -e "$PLIST_PATH" ]]; then
+  write_launch_agent "$previous/agent.plist"
+  mv "$previous/agent.plist" "$PLIST_PATH"
+  new_plist=1
+fi
+if [[ $loaded == 1 || "$MODE" == --enable-login ]]; then
+  new_job=1
+  launchctl bootstrap "$domain" "$PLIST_PATH"
+elif [[ -n "$manual_pid" || ! -d "$app_tmp/old.app" ]]; then
+  /usr/bin/open "$APP_PATH"
+fi
+success=1
+echo "VoiceToText ready at $APP_PATH"

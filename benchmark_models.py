@@ -18,15 +18,15 @@ from config import load_vocabulary
 
 SAMPLES = (
     ("short", "Schedule a meeting at three thirty."),
-    ("technical", "Create a pull request for the WebSocket API and assign it to Ved."),
+    ("technical", "Create a pull request for the WebSocket API and assign it to the reviewer."),
     (
         "numbers",
         "On September twenty eighth, order twelve USB C adapters for forty nine dollars and ninety five cents.",
     ),
     (
         "long",
-        "Please update the Jira ticket for the Atlas deployment, check the GitHub branch, "
-        "and tell Ronak that the local MLX Whisper benchmark finished without uploading audio. "
+        "Please update the Jira ticket for the staging deployment, check the GitHub branch, "
+        "and tell the reviewer that the local MLX Whisper benchmark finished without uploading audio. "
         "After that, open Visual Studio Code and review the WebSocket API changes.",
     ),
 )

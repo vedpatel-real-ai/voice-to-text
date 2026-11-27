@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 import hashlib
 import os
 import platform
@@ -11,7 +12,7 @@ from typing import Dict
 
 APP_NAME = "VoiceToText"
 BUNDLE_ID = "com.ved.voicetotext"
-APP_VERSION = "3.0.1"
+APP_VERSION = "3.0.2"
 
 FINGERPRINT_FILES = (
     "voice_to_text.py",
@@ -49,6 +50,7 @@ def source_fingerprint(root: Path | None = None) -> str:
     return digest.hexdigest()
 
 
+@lru_cache(maxsize=1)
 def runtime_identity() -> Dict[str, str]:
     identity = {
         "version": APP_VERSION,

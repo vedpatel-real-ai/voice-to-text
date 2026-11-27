@@ -1,54 +1,54 @@
 # VoiceToText production lock — Python 3.12, Apple Silicon macOS.
-altgraph==0.17.5
-anyio==4.14.2
-certifi==2026.7.22
-cffi==2.1.0
-charset-normalizer==3.4.9
-click==8.4.2
-filelock==3.32.2
-fsspec==2026.7.0
-h11==0.16.0
-hf-xet==1.5.2
-httpcore==1.0.9
-httpx==0.28.1
-huggingface_hub==1.25.1
-idna==3.18
-Jinja2==3.1.6
-llvmlite==0.48.0
-macholib==1.16.4
-MarkupSafe==3.0.3
-mlx==0.32.0
-mlx-metal==0.32.0
-mlx-whisper==0.4.3
-modulegraph==0.19.7
-more-itertools==11.1.0
-mpmath==1.3.0
-networkx==3.6.1
-numba==0.66.0
-numpy==2.4.6
-packaging==26.2
-pillow==12.3.0
-py2app==0.28.10
-pycparser==3.0
-pyobjc-core==12.2.1
-pyobjc-framework-ApplicationServices==12.2.1
-pyobjc-framework-AVFoundation==12.2.1
-pyobjc-framework-Cocoa==12.2.1
-pyobjc-framework-CoreAudio==12.2.1
-pyobjc-framework-CoreMedia==12.2.1
-pyobjc-framework-CoreText==12.2.1
-pyobjc-framework-Quartz==12.2.1
-PyYAML==6.0.3
-regex==2026.7.19
-requests==2.34.2
-rumps==0.4.0
-scipy==1.18.0
-setuptools==84.0.0
-six==1.17.0
-sounddevice==0.5.5
-sympy==1.14.0
-tiktoken==0.13.0
-torch==2.13.0
-tqdm==4.70.0
-typing_extensions==4.16.0
-urllib3==2.7.0
+altgraph==0.17.5 --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+anyio==4.14.2 --hash=sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494
+certifi==2026.10.18 --hash=sha256:73191c47aaa79da394e8fee2dbc2ec827432cab56311122c9e47abf79e390f62
+cffi==2.1.0 --hash=sha256:78474632761faa0fb96f30b1c928c84ebcf68713cbb80d15bab09dfe61640fde
+charset-normalizer==3.4.9 --hash=sha256:45b0cc4e3556cd875e09102988d1ab8356c998b596c9fced84547c8138b487a0
+click==8.4.2 --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76
+filelock==4.2.1 --hash=sha256:7be2662e9e826b9bba28afc0f843a123280d799a2ea44bb5d35ccec67905ae44
+fsspec==2026.7.0 --hash=sha256:b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279
+h11==0.16.0 --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
+hf-xet==1.5.2 --hash=sha256:045f84440c55cdeb659cf1a1dd48c77bcd0d2e93632e2fea8f2c3bdee79f38ed
+httpcore==1.0.9 --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55
+httpx==0.28.1 --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
+huggingface_hub==1.25.1 --hash=sha256:004d4e70350517e24c68a7dbb7dc5e40b2b6aefef8f94bf7a85f6f9835102ea5
+idna==3.18 --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+Jinja2==3.1.6 --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
+llvmlite==0.48.0 --hash=sha256:d66c3beb4209087ddd4cf4ed2a0856b6887e6a913bdcf1aacfec9851cf2cba4e
+macholib==1.16.4 --hash=sha256:da1a3fa8266e30f0ce7e97c6a54eefaae8edd1e5f86f3eb8b95457cae90265ea
+MarkupSafe==3.0.3 --hash=sha256:1872df69a4de6aead3491198eaf13810b565bdbeec3ae2dc8780f14458ec73ce
+mlx==0.32.0 --hash=sha256:8dfb577faa4dc413cfd0d6eb78f230d3b3b6169df4473e84408abdeb21346e9d
+mlx-metal==0.32.0 --hash=sha256:3af76a498d84804f66119800499f9d143d7dffb0878a0dd0d7c2846e58565fd7
+mlx-whisper==0.4.3 --hash=sha256:6b82b6597a994643a3e5496c7bc229a672e5ca308458455bfe276e76ae024489
+modulegraph==0.19.7 --hash=sha256:139f89042c9912777ba4bbf1d5496591c6ad780110ea3082c11e8737cf82cacc
+more-itertools==11.1.0 --hash=sha256:4b65538ae22f6fed0ce4874efd317463a7489796a0939fa66824dd542125a192
+mpmath==1.3.0 --hash=sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c
+networkx==3.6.1 --hash=sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762
+numba==0.66.0 --hash=sha256:53ca5900b7cab15109796030113a6b28576bae5ad7bb507ad6dd1360ddd81ba4
+numpy==2.4.6 --hash=sha256:3213d622a0283a39a93d188f3cf72b26862df52fbb4ca3697f51705016523d41
+packaging==26.2 --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
+pillow==13.0.0 --hash=sha256:fc481f742ccda20e9ed760b8f978dff50f2a4e9bc253ac167fb0a05b0783ef52
+py2app==0.28.10 --hash=sha256:bdb0cd2cbfa5160b5b11b8d612f6eb92d484a0282801e85b159f1930cd834714
+pycparser==3.0 --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+pyobjc-core==12.2.1 --hash=sha256:a64232bb27ed101d4adc7d42b0e64a6d3331aac7bee7861c037a6777a163f10b
+pyobjc-framework-ApplicationServices==12.2.1 --hash=sha256:f519ced13888d03410cd7da1f08fc56ee2944099e607216cef7ca26ecfdef61b
+pyobjc-framework-AVFoundation==12.2.1 --hash=sha256:f372800274df35f8d964cad0ad6da7636f1b6720e802e28e5a6bc1f16f16f135
+pyobjc-framework-Cocoa==12.2.1 --hash=sha256:28b9b8bab1c36efb94744786918752d0c1842f5fbb67e7d5ca97b5f736512080
+pyobjc-framework-CoreAudio==12.2.1 --hash=sha256:41a0d8c3b3957f35f17370071aeef94e176d07c9e2130d0aeeb4b260117acd52
+pyobjc-framework-CoreMedia==12.2.1 --hash=sha256:fd0e25bc704dd91882bc29d682880c42f712b39bdfe3d3168780d24a9d9eaf26
+pyobjc-framework-CoreText==12.2.1 --hash=sha256:ac2ead13dfa4379a1566129d0e8a8ea778a2bcac9ac360a583360fd4f1ba39c6
+pyobjc-framework-Quartz==12.2.1 --hash=sha256:de9c8cca7e95290c8d540466af11c7cdfe3a5458e6f56c34006d5b45243f9ed9
+PyYAML==6.0.3 --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
+regex==2026.7.19 --hash=sha256:d7da47a0f248977f08e2cb659ff3c17ddc13a4d39b3a7baa0a81bf5b415430f6
+requests==2.34.2 --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
+rumps==0.4.0 --hash=sha256:17fb33c21b54b1e25db0d71d1d793dc19dc3c0b7d8c79dc6d833d0cffc8b1596
+scipy==1.18.0 --hash=sha256:9ab7b758be6940954a713ee466e2043e9f6e2ed965c1fce5c91039f4be3d90a9
+setuptools==84.1.0 --hash=sha256:5231689c6ac8156cd155cfb98c3fd6fb252c3e7e9bd3d78b64d3c55f132624c9
+six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+sounddevice==0.5.5 --hash=sha256:05eb9fd6c54c38d67741441c19164c0dae8ce80453af2d8c4ad2e7823d15b722
+sympy==1.14.0 --hash=sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5
+tiktoken==0.13.0 --hash=sha256:4d9980f11429ed2d737c463bb1fb78cf330caa026adf002f714aced7849a687b
+torch==2.13.0 --hash=sha256:2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027
+tqdm==4.70.0 --hash=sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953
+typing_extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+urllib3==2.8.0 --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3

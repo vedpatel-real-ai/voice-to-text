@@ -7,7 +7,7 @@ import voice_to_text
 from audio import Capture
 from config import DEFAULTS
 from hotkey import HotkeyAction, HotkeyEvent
-from injection import InjectResult, Injection
+from injection import Destination, InjectResult, Injection
 from statemachine import Mode
 from transcription import ModelSnapshot, ModelState, Outcome, Transcript
 
@@ -36,7 +36,7 @@ class FakeRecorder:
         self.aborted = 0
         self.on_level = on_level
 
-    def start(self):
+    def start(self, current):
         self.started += 1
 
     def stop(self):
@@ -70,10 +70,14 @@ class FakeInjector:
         self.last_text = ""
         self.calls = []
 
-    def inject_async(self, text, expected_pid, completion):
-        self.calls.append((text, expected_pid))
+    def inject_async(self, text, target, completion, *, current):
+        assert current()
+        self.calls.append((text, target.pid))
         self.last_text = text
         completion(Injection(InjectResult.OK, method="fake", characters=len(text)))
+
+    def shutdown(self):
+        pass
 
     def undo_last(self):
         return False
@@ -101,8 +105,8 @@ def build_controller(monkeypatch):
     monkeypatch.setattr(voice_to_text, "Transcriber", FakeTranscriber)
     monkeypatch.setattr(voice_to_text, "Injector", FakeInjector)
     monkeypatch.setattr(voice_to_text, "Sounds", FakeSounds)
-    monkeypatch.setattr(voice_to_text, "frontmost_app", lambda: (123, "Editor"))
-    monkeypatch.setattr(voice_to_text, "secure_input_active", lambda: False)
+    monkeypatch.setattr(voice_to_text, "capture_destination", lambda: Destination(123, 1, 2, (0, 0)))
+    monkeypatch.setattr(voice_to_text, "load_vocabulary", lambda: "synthetic vocabulary")
     monkeypatch.setattr(voice_to_text.AppHelper, "callAfter", lambda fn, *args: fn(*args))
     return voice_to_text.DictationController(FakeSettings())
 
@@ -169,12 +173,12 @@ def test_stale_result_is_never_injected(monkeypatch):
         stale_generation, Transcript(Outcome.OK, text="stale", seconds=0.1)
     )
     assert controller.injector.calls == []
-    assert controller.recent()[0]["text"] == "stale"
+    assert controller.recent() == []
     controller.shutdown()
 
 
 def test_secure_history_is_redacted(monkeypatch):
     controller = build_controller(monkeypatch)
     controller._remember("secret", 0.1, True, True)
-    assert "secret" not in controller.recent()[0]["text"]
+    assert controller.recent() == []
     controller.shutdown()

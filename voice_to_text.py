@@ -27,7 +27,7 @@ from buildinfo import APP_VERSION, runtime_identity
 from config import Settings, load_vocabulary, support_dir, support_path
 from diagnostics import get_logger, latency, setup_logging
 from hotkey import HotkeyAction, HotkeyEvent, NativeHotkeyListener
-from injection import InjectResult, Injection, Injector, frontmost_app, secure_input_active
+from injection import InjectResult, Injection, Injector, Destination, capture_destination, prepare_frontmost_editor
 from permissions import (
     PermissionState,
     inspect_permissions,
@@ -82,14 +82,11 @@ class Sounds:
             log.warning("fallback sound playback failed: %s", exc)
 
 
-@dataclass
+@dataclass(frozen=True)
 class DictationSession:
     generation: int
     pressed_at: float
-    expected_pid: Optional[int]
-    expected_app: str
-    secure_input: bool
-    released_at: float = 0.0
+    destination: Optional[Destination]
 
 
 class DictationController:
@@ -105,6 +102,9 @@ class DictationController:
         self.history: Deque[Dict[str, object]] = deque(maxlen=int(settings.get("history_size")))
         self._history_lock = threading.Lock()
         self._session_lock = threading.Lock()
+        self._hotkey_lock = threading.Lock()
+        self._pending_hotkeys: Deque[HotkeyEvent] = deque()
+        self._hotkey_scheduled = False
         self._session: Optional[DictationSession] = None
         self._generation = 0
         self._commands: "queue.Queue[tuple[str, int]]" = queue.Queue()
@@ -114,7 +114,8 @@ class DictationController:
         )
         self._active_future: Optional[concurrent.futures.Future] = None
         self._shutting_down = False
-        self._inference_hung = False
+        self._warm_future = None
+        self._released_at = 0.0
         self._last_error_lock = threading.Lock()
         self._last_error = ""
         self.hotkey_listener: Optional[NativeHotkeyListener] = None
@@ -153,8 +154,26 @@ class DictationController:
             return session if session and session.generation == generation else None
 
     def handle_hotkey_event(self, event: HotkeyEvent) -> None:
-        """Called by hotkey dispatcher; it only schedules main-run-loop work."""
-        AppHelper.callAfter(self._handle_hotkey_event_main, event)
+        """Coalesce off-main callbacks into one bounded AppKit drain."""
+        with self._hotkey_lock:
+            if self._shutting_down:
+                return
+            if len(self._pending_hotkeys) >= 64:
+                self._pending_hotkeys.clear()
+                event = HotkeyEvent(HotkeyAction.CANCEL, event.monotonic_time)
+            self._pending_hotkeys.append(event)
+            if self._hotkey_scheduled:
+                return
+            self._hotkey_scheduled = True
+        AppHelper.callAfter(self._drain_hotkeys)
+
+    def _drain_hotkeys(self):
+        with self._hotkey_lock:
+            events = tuple(self._pending_hotkeys)
+            self._pending_hotkeys.clear()
+            self._hotkey_scheduled = False
+        for event in events:
+            self._handle_hotkey_event_main(event)
 
     def _handle_hotkey_event_main(self, event: HotkeyEvent) -> None:
         if self._shutting_down:
@@ -181,8 +200,10 @@ class DictationController:
             self.stop_and_transcribe(event.monotonic_time)
 
     def start_recording(self, pressed_at: Optional[float] = None) -> None:
-        if self._inference_hung and self._active_future and not self._active_future.done():
-            self.last_error = "Previous ML inference is still hung; restart VoiceToText."
+        if self._shutting_down:
+            return
+        if self._active_future and not self._active_future.done():
+            self.last_error = "Previous inference is still finishing. Try again shortly."
             log.error(self.last_error)
             return
         current = self.state.mode
@@ -193,30 +214,25 @@ class DictationController:
             log.debug("ignoring Option-down while %s", current)
             return
 
-        pid, app_name = frontmost_app()
         self._generation += 1
-        session = DictationSession(
-            generation=self._generation,
-            pressed_at=pressed_at or time.monotonic(),
-            expected_pid=pid,
-            expected_app=app_name,
-            secure_input=secure_input_active(),
-        )
+        session = DictationSession(self._generation, pressed_at or time.monotonic(), capture_destination())
         with self._session_lock:
             self._session = session
         if not self.state.transition(Mode.RECORDING, expect=Mode.IDLE):
+            return
+        if session.destination is None:
+            self._privacy_stop()
             return
         self.last_error = ""
         self._commands.put(("start", session.generation))
         self._notify_ui()
         self.sounds.play("start")
         latency.record("option_to_listening", max(0.0, time.monotonic() - session.pressed_at))
-        log.info(
-            "session %d recording requested for %s (pid %s)",
-            session.generation,
-            app_name or "unknown",
-            pid,
-        )
+        log.info("session %d recording requested", session.generation)
+
+    def _privacy_stop(self):
+        self.cancel("Private or unverified field")
+        self.last_error = "Recording discarded. Focus an accessible, ordinary text field."
 
     def stop_and_transcribe(self, released_at: Optional[float] = None) -> None:
         if not self.state.transition(Mode.TRANSCRIBING, expect=Mode.RECORDING):
@@ -226,17 +242,30 @@ class DictationController:
         if session is None:
             self.state.transition(Mode.FAILED, expect=Mode.TRANSCRIBING, detail="missing session")
             return
-        session.released_at = released_at or time.monotonic()
+        if session.destination is None or capture_destination() != session.destination:
+            self._privacy_stop()
+            return
+        self._released_at = released_at or time.monotonic()
         self._commands.put(("stop", generation))
         self._notify_ui()
         self.sounds.play("stop")
-        latency.record("option_up_to_transcribing", max(0.0, time.monotonic() - session.released_at))
+        latency.record("option_up_to_transcribing", max(0.0, time.monotonic() - self._released_at))
 
-    def cancel(self) -> None:
-        if not self.state.transition(Mode.CANCELLED, expect=Mode.RECORDING):
+    def cancel(self, detail="Cancelled") -> None:
+        mode = self.state.mode
+        if mode not in (Mode.RECORDING, Mode.TRANSCRIBING) or not self.state.transition(Mode.CANCELLED, expect=mode, detail=detail):
             return
         generation = self.current_generation()
+        with self._session_lock:
+            self._session = None
+        while True:
+            try:
+                self._commands.get_nowait()
+            except queue.Empty:
+                break
         self._commands.put(("cancel", generation))
+        if self._active_future is not None:
+            self._active_future.cancel()
         self._notify_ui()
         log.info("session %d cancelled", generation)
 
@@ -244,14 +273,20 @@ class DictationController:
         while True:
             command, generation = self._commands.get()
             if command == "shutdown":
+                self.recorder.abort()
                 return
+            if self._shutting_down:
+                continue
             try:
                 if command == "start":
                     if (
                         self._session_for(generation) is not None
                         and self.state.mode in (Mode.RECORDING, Mode.TRANSCRIBING)
                     ):
-                        self.recorder.start()
+                        active = lambda: not self._shutting_down and self._session_for(generation) is not None
+                        self.recorder.start(active)
+                        if not active():
+                            self.recorder.abort()
                         log.info("session %d microphone capturing", generation)
                 elif command == "stop":
                     capture = self.recorder.stop()
@@ -278,17 +313,23 @@ class DictationController:
         self._active_future = future
 
     def _transcribe_worker(self, generation: int, capture: Capture) -> None:
-        transcript = self.transcriber.transcribe(capture)
+        try:
+            transcript = self.transcriber.transcribe(capture)
+        except Exception as exc:
+            log.error("Inference worker failed (%s)", type(exc).__name__)
+            AppHelper.callAfter(self._fail_session_main, generation, "Local inference failed. Try again.")
+            return
         AppHelper.callAfter(self._handle_transcript_main, generation, transcript)
 
     def _handle_transcript_main(self, generation: int, transcript: Transcript) -> None:
         session = self._session_for(generation)
         if session is None or self.state.mode is not Mode.TRANSCRIBING:
-            if transcript.text:
-                self._remember(transcript.text, transcript.seconds, False, False)
             log.warning("session %d result became stale; not inserting", generation)
             return
-        self._inference_hung = False
+        now = capture_destination()
+        if session.destination is None or now is None:
+            self._privacy_stop()
+            return
         if transcript.outcome is Outcome.TOO_SHORT:
             self.state.transition(Mode.CANCELLED, expect=Mode.TRANSCRIBING, detail="too short")
             return
@@ -296,7 +337,7 @@ class DictationController:
             self.state.transition(Mode.NO_SPEECH, expect=Mode.TRANSCRIBING, detail=transcript.detail)
             return
         if transcript.outcome is Outcome.LOW_CONFIDENCE:
-            self._remember(transcript.text, transcript.seconds, False, session.secure_input)
+            self._remember(transcript.text, transcript.seconds, False, False)
             # Keep uncertain text recoverable in History without repeatedly
             # interrupting the user with a system notification.
             self.last_error = ""
@@ -314,23 +355,25 @@ class DictationController:
             self.state.transition(Mode.FAILED, expect=Mode.TRANSCRIBING, detail=transcript.detail)
             return
 
-        self._remember(transcript.text, transcript.seconds, True, session.secure_input)
         self.injector.inject_async(
-            transcript.text,
-            session.expected_pid,
-            lambda outcome: self._injection_complete(generation, outcome),
+            transcript.text, session.destination,
+            lambda outcome: self._injection_complete(generation, outcome, transcript),
+            current=lambda: self._session_for(generation) is session and self.state.mode is Mode.TRANSCRIBING,
         )
 
-    def _injection_complete(self, generation: int, outcome: Injection) -> None:
+    def _injection_complete(self, generation, outcome, transcript):
         session = self._session_for(generation)
         if session is None or self.state.mode is not Mode.TRANSCRIBING:
-            log.warning("ignoring stale injection completion for session %d", generation)
             return
-        total = time.monotonic() - session.released_at if session.released_at else 0.0
-        latency.record("release_to_insert", total)
+        if session.destination is None or outcome.result is InjectResult.PROTECTED or capture_destination() is None:
+            self._privacy_stop()
+            return
+        self._remember(transcript.text, transcript.seconds, outcome.result is InjectResult.OK, False)
+        total = time.monotonic() - self._released_at if self._released_at else 0.0
         if outcome.result is InjectResult.OK:
+            latency.record("release_to_post", total)
             self.state.transition(Mode.DONE, expect=Mode.TRANSCRIBING, detail=f"{total:.2f}s")
-            log.info("session %d inserted in %.2fs via %s", generation, total, outcome.method)
+            log.info("session %d posted in %.2fs via %s", generation, total, outcome.method)
         elif outcome.result is InjectResult.PERMISSION_DENIED:
             self.last_error = "Accessibility/Event Posting permission is missing."
             self.state.transition(
@@ -338,11 +381,11 @@ class DictationController:
             )
         elif outcome.result is InjectResult.FOCUS_CHANGED:
             self.last_error = (
-                f"Focus changed to {outcome.detail or 'another app'}; transcript retained in History."
+                "Focus changed. Recover the transcript from History."
             )
             self.state.transition(Mode.CANCELLED, expect=Mode.TRANSCRIBING, detail="focus changed")
         else:
-            self.last_error = outcome.detail
+            self.last_error = outcome.detail + " Recover the transcript from History."
             self.state.transition(Mode.FAILED, expect=Mode.TRANSCRIBING, detail=outcome.detail)
 
     def _fail_session_main(self, generation: int, message: str) -> None:
@@ -356,15 +399,20 @@ class DictationController:
     def mark_transcription_timeout(self) -> None:
         if self.state.mode is not Mode.TRANSCRIBING:
             return
-        self._inference_hung = bool(self._active_future and not self._active_future.done())
+        with self._session_lock:
+            self._session = None
+        self._commands.put(("cancel", 0))
+        if self._active_future is not None:
+            self._active_future.cancel()
         self.last_error = "ML inference exceeded the safety timeout; restart if it remains busy."
         self.state.transition(Mode.FAILED, expect=Mode.TRANSCRIBING, detail="inference timeout")
 
     def _remember(self, text: str, seconds: float, trusted: bool, secure: bool) -> None:
-        stored = "[not stored — secure input was active]" if secure else text
+        if secure or self._shutting_down:
+            return
         with self._history_lock:
             self.history.appendleft(
-                {"text": stored, "at": time.time(), "seconds": seconds, "trusted": trusted}
+                {"id": self._generation, "text": text, "at": time.time(), "seconds": seconds, "trusted": trusted}
             )
             self._prune_old_locked()
 
@@ -382,17 +430,30 @@ class DictationController:
             self._prune_old_locked()
             return list(self.history)
 
+    def warm_model(self):
+        if self._shutting_down:
+            return
+        if self._warm_future is not None:
+            self._warm_future.cancel()
+        self._warm_future = self._inference.submit(self.transcriber.warm_up)
+
     def shutdown(self) -> None:
         if self._shutting_down:
             return
         self._shutting_down = True
+        with self._hotkey_lock:
+            self._pending_hotkeys.clear()
         if self.hotkey_listener is not None:
             self.hotkey_listener.stop()
-        try:
-            self.recorder.abort()
-        except Exception:
-            log.exception("microphone cleanup failed")
+        with self._session_lock:
+            self._session = None
+        self.injector.shutdown()
+        with self._history_lock:
+            self.history.clear()
         self._commands.put(("shutdown", 0))
+        self._audio_worker.join(timeout=1)
+        if self._audio_worker.is_alive():
+            log.warning("Waiting for native stream open to return on audio worker")
         self._inference.shutdown(wait=False, cancel_futures=True)
         self.state.force_idle("shutdown")
 
@@ -404,6 +465,7 @@ class DictationApp(rumps.App):
         self.settings = settings
         self._last_mode: Optional[Mode] = None
         self._last_status_write = 0.0
+        self._last_focus_check = 0.0
         self.pill = FloatingPill() if settings.get("pill_enabled") else NullPill()
         if settings.get("pill_enabled") and not self.pill.available:
             self.pill = NullPill()
@@ -411,6 +473,24 @@ class DictationApp(rumps.App):
         self.timer = rumps.Timer(self.refresh, float(settings.get("refresh_interval")))
         self.timer.start()
         controller.ui_refresh = self.refresh
+        from AppKit import (NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+                            NSWorkspaceWillSleepNotification, NSWorkspaceSessionDidResignActiveNotification)
+        from Foundation import NSOperationQueue, NSDistributedNotificationCenter
+        queue_main = NSOperationQueue.mainQueue()
+        workspace_center = NSWorkspace.sharedWorkspace().notificationCenter()
+        self._observers = []
+        for center, name in ((workspace_center, NSWorkspaceWillSleepNotification),
+                             (workspace_center, NSWorkspaceSessionDidResignActiveNotification),
+                             (NSDistributedNotificationCenter.defaultCenter(), "com.apple.screenIsLocked")):
+            token = center.addObserverForName_object_queue_usingBlock_(
+                name, None, queue_main, lambda _: controller.cancel("Session interrupted")
+            )
+            self._observers.append((center, token))
+        token = workspace_center.addObserverForName_object_queue_usingBlock_(
+            NSWorkspaceDidActivateApplicationNotification, None, queue_main, lambda _: prepare_frontmost_editor()
+        )
+        self._observers.append((workspace_center, token))
+        prepare_frontmost_editor()
 
     def _build_menu(self) -> None:
         self.status_item = rumps.MenuItem("Idle")
@@ -439,7 +519,6 @@ class DictationApp(rumps.App):
             ("Start/stop sounds", "sound_enabled"),
             ("Floating pill", "pill_enabled"),
             ("Append trailing space", "append_trailing_space"),
-            ("Abort if focus changes", "guard_focus_change"),
             ("Also accept Right ⌥", "allow_right_option"),
             ("Debug logging", "debug"),
         ):
@@ -458,8 +537,8 @@ class DictationApp(rumps.App):
         self._model_items = {}
         for model, label in (
             ("mlx-community/whisper-tiny.en-mlx", "tiny.en"),
-            ("mlx-community/whisper-small.en-mlx", "small.en"),
-            ("mlx-community/whisper-medium.en-mlx", "medium.en (default)"),
+            ("mlx-community/whisper-small.en-mlx", "small.en (default)"),
+            ("mlx-community/whisper-medium.en-mlx", "medium.en"),
             ("mlx-community/whisper-large-v3-mlx", "large-v3"),
         ):
             item = rumps.MenuItem(label, callback=self._make_model_setter(model))
@@ -468,6 +547,7 @@ class DictationApp(rumps.App):
             model_menu.add(item)
         settings_menu.add(model_menu)
         settings_menu.add(rumps.MenuItem("Edit vocabulary…", callback=self.on_edit_vocabulary))
+        settings_menu.add(rumps.MenuItem("Reload vocabulary", callback=self.on_reload_vocabulary))
         settings_menu.add(rumps.MenuItem("Reveal support folder…", callback=self.on_open_support))
         settings_menu.add(rumps.MenuItem("Open log…", callback=self.on_open_log))
 
@@ -477,7 +557,6 @@ class DictationApp(rumps.App):
             self.latency_item,
             None,
             rumps.MenuItem("Copy last transcript", callback=self.on_copy_last),
-            rumps.MenuItem("Undo last insertion", callback=self.on_undo),
             self.history_menu,
             None,
             settings_menu,
@@ -493,7 +572,11 @@ class DictationApp(rumps.App):
 
     def _make_toggle(self, key: str):
         def handler(sender):
-            value = self.settings.toggle(key)
+            try:
+                value = self.settings.toggle(key)
+            except OSError:
+                self.controller.last_error = self.settings.error
+                return
             sender.state = int(value)
             if key == "debug":
                 setup_logging(value)
@@ -503,7 +586,11 @@ class DictationApp(rumps.App):
 
     def _make_injection_setter(self, mode: str):
         def handler(_sender):
-            self.settings.set("injection_mode", mode)
+            try:
+                self.settings.set("injection_mode", mode)
+            except OSError:
+                self.controller.last_error = self.settings.error
+                return
             for key, item in self._injection_items.items():
                 item.state = int(key == mode)
         return handler
@@ -514,7 +601,11 @@ class DictationApp(rumps.App):
                 return
             if self.controller.state.mode is Mode.RECORDING:
                 self.controller.cancel()
-            self.settings.set("option_key_mode", mode)
+            try:
+                self.settings.set("option_key_mode", mode)
+            except OSError:
+                self.controller.last_error = self.settings.error
+                return
             for key, item in self._option_mode_items.items():
                 item.state = int(key == mode)
             self.detail_item.title = self._option_instruction()
@@ -529,15 +620,16 @@ class DictationApp(rumps.App):
         def handler(_sender):
             if self.settings.get("model") == model:
                 return
-            self.settings.set("model", model)
+            try:
+                self.settings.set("model", model)
+            except OSError:
+                self.controller.last_error = self.settings.error
+                return
+            self.controller.cancel("Model changed")
             self.controller.transcriber.select_model(model)
             for key, item in self._model_items.items():
                 item.state = int(key == model)
-            threading.Thread(
-                target=self.controller.transcriber.warm_up,
-                name="model-change",
-                daemon=True,
-            ).start()
+            self.controller.warm_model()
         return handler
 
     def _refresh_history_menu(self) -> None:
@@ -550,31 +642,37 @@ class DictationApp(rumps.App):
             self.history_menu.add(empty)
             return
         for entry in entries:
-            text = str(entry["text"])
-            preview = text[:48] + ("…" if len(text) > 48 else "")
             stamp = time.strftime("%H:%M", time.localtime(float(entry["at"])))
             mark = "" if entry["trusted"] else "⚠︎ "
             self.history_menu.add(
-                rumps.MenuItem(f"{mark}{stamp}  {preview}", callback=self._make_history_copier(text))
+                rumps.MenuItem(f"{mark}{stamp} · Dictation {entry['id']}", callback=self._make_history_copier(entry["id"]))
             )
 
-    def _make_history_copier(self, text: str):
+    def _make_history_copier(self, entry_id):
         def handler(_sender):
             from AppKit import NSPasteboard, NSPasteboardTypeString
 
+            entry = next((v for v in self.controller.recent() if v["id"] == entry_id), None)
+            if entry is None:
+                return
             board = NSPasteboard.generalPasteboard()
             board.clearContents()
-            board.setString_forType_(text, NSPasteboardTypeString)
+            board.setString_forType_(entry["text"], NSPasteboardTypeString)
         return handler
 
     def on_copy_last(self, _sender) -> None:
         entries = self.controller.recent()
         if entries:
-            self._make_history_copier(str(entries[0]["text"]))(None)
+            self._make_history_copier(entries[0]["id"])(None)
 
-    def on_undo(self, _sender) -> None:
-        if not self.controller.injector.undo_last():
-            rumps.notification("VoiceToText", "Nothing to undo", "No recent insertion.")
+    def on_reload_vocabulary(self, _sender):
+        try:
+            vocabulary = config.load_vocabulary(strict=True)
+            self.controller.transcriber.set_vocabulary(vocabulary)
+            message = "Updated for the next transcription."
+        except (OSError, ValueError):
+            message = "Could not read vocabulary. Check the file and try again."
+        rumps.notification("VoiceToText", "Vocabulary", message)
 
     def on_edit_vocabulary(self, _sender) -> None:
         path = config.vocabulary_path()
@@ -597,7 +695,14 @@ class DictationApp(rumps.App):
         log.info("permission report: %s", report)
         rumps.notification("VoiceToText", "Permissions", body)
 
+    def _remove_observers(self):
+        for center, token in self._observers:
+            center.removeObserver_(token)
+        self._observers.clear()
+
     def on_quit(self, _sender) -> None:
+        self._remove_observers()
+        self.timer.stop()
         self.controller.shutdown()
         rumps.quit_application()
 
@@ -610,12 +715,22 @@ class DictationApp(rumps.App):
         )
         if hasattr(self, "timer") and abs(self.timer.interval - desired_interval) > 0.001:
             self.timer.interval = desired_interval
-        if time.monotonic() - self._last_status_write >= 5.0:
+        if time.monotonic() - self._last_status_write >= 15.0:
             self._write_runtime_status(mode)
             self._last_status_write = time.monotonic()
+        if mode in (Mode.RECORDING, Mode.TRANSCRIBING) and time.monotonic() - self._last_focus_check >= 0.25:
+            self._last_focus_check = time.monotonic()
+            session = self.controller._session_for(self.controller.current_generation())
+            destination = capture_destination()
+            if destination is None or (mode is Mode.RECORDING and session and destination != session.destination):
+                self.controller._privacy_stop()
+                return
+            if mode is Mode.RECORDING and self.controller.recorder.interrupted():
+                self.controller.cancel("Microphone disconnected")
+                return
         if mode is Mode.RECORDING and elapsed > float(self.settings.get("max_recording_seconds")):
             log.warning("recording watchdog fired")
-            self.controller.stop_and_transcribe()
+            self.controller.cancel("Recording limit reached")
             return
         if mode is Mode.TRANSCRIBING and elapsed > float(self.settings.get("max_transcribe_seconds")):
             log.error("transcription watchdog fired")
@@ -629,6 +744,7 @@ class DictationApp(rumps.App):
             self._on_mode_changed(mode)
             self._last_mode = mode
         if mode is Mode.IDLE:
+            self.controller.recent()
             self.pill.hide()
         else:
             self.pill.show(self._pill_text(mode, detail, elapsed), STYLES[mode][1])
@@ -672,10 +788,12 @@ class DictationApp(rumps.App):
             log.warning("could not write runtime health status: %s", exc)
 
     def _pill_text(self, mode: Mode, detail: str, elapsed: float) -> str:
+        if mode is Mode.LOW_CONFIDENCE:
+            return "Review in History"
+        if mode is Mode.CANCELLED:
+            return detail or "Cancelled"
         if mode is Mode.DONE:
-            preview = self._last_transcript_preview()
-            if preview:
-                return preview
+            return "Text posted"
         label = STYLES[mode][0]
         if mode is Mode.TRANSCRIBING and elapsed > SLOW_TRANSCRIBE_SECONDS:
             return f"{label} {elapsed:.0f}s"
@@ -683,20 +801,11 @@ class DictationApp(rumps.App):
             return f"{label} {elapsed:.0f}s"
         return label
 
-    def _last_transcript_preview(self, limit: int = 72) -> str:
-        entries = self.controller.recent()
-        if not entries:
-            return ""
-        text = " ".join(str(entries[0]["text"]).split())
-        return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
     def _transient_duration(self, mode: Mode) -> float:
         if mode is Mode.NO_SPEECH:
             return NO_SPEECH_SECONDS
-        if mode is Mode.DONE:
-            return min(1.2, max(TRANSIENT_SECONDS, 0.3 + len(self._last_transcript_preview()) * 0.01))
         if mode is Mode.LOW_CONFIDENCE:
-            return 0.18
+            return 1.8
         if mode in (Mode.FAILED, Mode.PERMISSION_DENIED):
             return 1.8
         return TRANSIENT_SECONDS
@@ -723,13 +832,16 @@ class DictationApp(rumps.App):
                 self.detail_item.title = "Loading model…"
             elif model.state is ModelState.FAILED:
                 self.detail_item.title = f"Model failed: {model.error}"[:80]
+            elif getattr(self.settings, "error", ""):
+                self.detail_item.title = self.settings.error
             elif self.controller.last_error:
                 self.detail_item.title = self.controller.last_error[:80]
             else:
                 self.detail_item.title = self._option_instruction() + " · Esc cancels"
         else:
             self.detail_item.title = detail or "…"
-        self.latency_item.title = f"Latency: {latency.format('release_to_insert')}"
+        self.latency_item.hidden = not self.settings.get("show_latency")
+        self.latency_item.title = f"Release to post: {latency.format('release_to_post')}"
 
 
 def _install_crash_handlers() -> None:
@@ -748,7 +860,10 @@ def _request_permissions_once(settings: Settings) -> None:
     request_accessibility_once()
     request_input_monitoring_once()
     request_microphone_once()
-    settings.set("permission_prompt_build", build)
+    try:
+        settings.set("permission_prompt_build", build)
+    except OSError:
+        log.warning("Permission prompt preference could not be saved")
 
 
 def main() -> int:
@@ -770,7 +885,7 @@ def main() -> int:
 
     guard = SingleInstance()
     if not guard.acquire():
-        log.error("refusing to start a second instance")
+        log.error("Cannot start without an exclusive instance lock")
         return 1
     atexit.register(guard.release)
 
@@ -793,12 +908,11 @@ def main() -> int:
     )
     controller.hotkey_listener = listener
     threading.Thread(target=listener.run, name="quartz-event-tap", daemon=True).start()
-    threading.Thread(target=controller.transcriber.warm_up, name="model-warmup", daemon=True).start()
+    controller.warm_model()
 
     def handle_signal(signum, _frame):
         log.info("received signal %s", signum)
         controller.shutdown()
-        guard.release()
         rumps.quit_application()
 
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -810,11 +924,13 @@ def main() -> int:
     log.info("menu bar app starting")
     DictationApp(controller, settings).run()
     controller.shutdown()
-    guard.release()
     return 0
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--check-bundle"]:
+        print(runtime_identity()["fingerprint"])
+        sys.exit(0)
     try:
         sys.exit(main())
     except Exception:

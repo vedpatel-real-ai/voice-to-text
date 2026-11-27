@@ -38,9 +38,8 @@ class SingleInstance:
         try:
             handle = open(self._path, "a+")
         except Exception as exc:
-            # Never let the guard itself prevent the app from running.
-            log.warning("could not open lock file (%s) — continuing unguarded", exc)
-            return True
+            log.error("Cannot establish exclusive ownership. Check support directory permissions (%s)", type(exc).__name__)
+            return False
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (OSError, IOError):

@@ -640,7 +640,7 @@ class FloatingPill:
         if not self.available or not self.visible:
             return
         style = STYLES.get(mode)
-        animate = style[2] if style else False
+        animate = bool(style and style[2] and not _reduce_motion_enabled())
         now = time.time()
         span = BAR_MAX_H - BAR_MIN_H
         for i, (bar, bx) in enumerate(self.bars):

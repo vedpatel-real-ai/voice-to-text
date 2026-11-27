@@ -37,7 +37,7 @@ OPTIONS = {
         "LSMultipleInstancesProhibited": True,
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription": (
-            "VoiceToText records only while you hold Left Option and transcribes locally."
+            "VoiceToText records during a hold or toggle dictation session and transcribes locally."
         ),
     },
 }

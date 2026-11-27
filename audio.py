@@ -62,6 +62,8 @@ def analyze_speech(
 ) -> SpeechAnalysis:
     """Frame-based adaptive speech gate with leading/trailing padding."""
     samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if not np.isfinite(samples).all():
+        return SpeechAnalysis(np.empty(0, np.float32), False, 0.0, absolute_floor, samples.size)
     if samples.size == 0 or sample_rate <= 0:
         return SpeechAnalysis(samples, False, 0.0, absolute_floor, samples.size)
 
@@ -81,11 +83,12 @@ def analyze_speech(
     adaptive = noise_floor + max(0.00025, spread * 0.25)
     threshold = max(float(absolute_floor), float(trim_floor), adaptive)
     voiced = rms >= threshold
+    sustained = bool(np.any(voiced[1:] & voiced[:-1]))
     if voiced.size >= 3:
         voiced[1:-1] |= voiced[:-2] & voiced[2:]
     min_frames = max(1, int(math.ceil(min_speech_ms / frame_ms)))
     speech_frames = int(np.count_nonzero(voiced))
-    speech_present = speech_frames >= min_frames
+    speech_present = speech_frames >= min_frames and (min_frames == 1 or sustained)
     if not speech_present:
         return SpeechAnalysis(samples, False, speech_frames / frame_count, threshold, samples.size)
 
@@ -131,8 +134,10 @@ class Recorder:
     def _record_status(self, message: str) -> None:
         with self._lock:
             self._glitches += 1
-            if message and message not in self._messages:
+            if message and message not in self._messages and len(self._messages) < 8:
                 self._messages.append(message)
+            else:
+                return
         log.warning("audio callback status: %s", message or "unknown")
 
     def _callback(self, indata, frames, _time_info, status):
@@ -140,6 +145,9 @@ class Recorder:
             self._record_status(str(status).strip())
         try:
             block = np.asarray(indata[:, 0] if indata.ndim > 1 else indata, dtype=np.float32).copy()
+            if not np.isfinite(block).all():
+                self._record_status("invalid audio samples")
+                block = np.nan_to_num(block, nan=0.0, posinf=0.0, neginf=0.0)
             rms = float(np.sqrt(np.mean(np.square(block, dtype=np.float64)))) if block.size else 0.0
         except (IndexError, TypeError, ValueError, FloatingPointError) as exc:
             self._record_status(f"buffer conversion failed: {type(exc).__name__}: {exc}")
@@ -190,7 +198,7 @@ class Recorder:
             log.warning("%s does not support %d Hz; capturing at %d Hz", name, desired_rate, fallback)
             return device, fallback, name
 
-    def start(self) -> None:
+    def start(self, current=lambda: True) -> None:
         import sounddevice as sd
 
         device, sample_rate, name = self._select_input()
@@ -216,6 +224,9 @@ class Recorder:
                 blocksize=int(self._settings.get("audio_blocksize") or 0),
                 callback=self._callback,
             )
+            if not current():
+                stream.close()
+                return
             stream.start()
         except Exception as exc:
             if stream is not None:
@@ -233,6 +244,16 @@ class Recorder:
     def elapsed(self) -> float:
         with self._lock:
             return time.monotonic() - self._started_at if self._started_at else 0.0
+
+    def interrupted(self) -> bool:
+        with self._lock:
+            stream = self._stream
+            if stream is None:
+                return False
+            try:
+                return not stream.active
+            except Exception:
+                return True
 
     def overran(self) -> bool:
         with self._lock:
@@ -253,7 +274,6 @@ class Recorder:
             self._record_status(f"stream close failed: {exc}")
 
     def stop(self) -> Capture:
-        duration = self.elapsed()
         self._close_stream()
         with self._lock:
             frames, self._frames = self._frames, []
@@ -268,7 +288,7 @@ class Recorder:
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64)))) if audio.size else 0.0
         clipped = float(np.mean(np.abs(audio) >= 0.985)) if audio.size else 0.0
-        return Capture(audio, duration, peak, rms, target_rate, glitches, messages, clipped)
+        return Capture(audio, len(audio) / target_rate, peak, rms, target_rate, glitches, messages, clipped)
 
     def abort(self) -> None:
         self._close_stream()

@@ -41,6 +41,8 @@ class NativeHotkeyListener:
         self._tap = None
         self._run_loop = None
         self._pressed = set()
+        self._owner = None
+        self._wait_release = False
         self._health_lock = threading.Lock()
         self._healthy = False
         self._last_error = "not started"
@@ -73,7 +75,22 @@ class NativeHotkeyListener:
         try:
             self._events.put_nowait(HotkeyEvent(action, time.monotonic()))
         except queue.Full:
-            log.error("hotkey dispatch queue overflow; dropping %s", action.value)
+            while True:
+                try:
+                    self._events.get_nowait()
+                except queue.Empty:
+                    break
+            self._owner = None
+            self._pressed.clear()
+            self._wait_release = True
+            self._events.put_nowait(HotkeyEvent(HotkeyAction.CANCEL, time.monotonic()))
+            log.warning("Hotkey queue overflow; gesture cancelled")
+
+    def _discontinuity(self):
+        self._pressed.clear()
+        self._owner = None
+        self._wait_release = True
+        self._enqueue(HotkeyAction.CANCEL)
 
     def _dispatch_loop(self) -> None:
         while not self._stop.is_set():
@@ -95,6 +112,7 @@ class NativeHotkeyListener:
         ):
             reason = "timeout" if event_type == Quartz.kCGEventTapDisabledByTimeout else "user input"
             log.warning("event tap disabled by %s; re-enabling", reason)
+            self._discontinuity()
             if self._tap is not None:
                 Quartz.CGEventTapEnable(self._tap, True)
                 with self._health_lock:
@@ -108,25 +126,28 @@ class NativeHotkeyListener:
             LEFT_OPTION_KEYCODE,
             RIGHT_OPTION_KEYCODE,
         ):
-            if keycode == RIGHT_OPTION_KEYCODE and not self._allow_right_option():
+            flags = Quartz.CGEventGetFlags(event)
+            # NX_DEVICELALTKEYMASK / NX_DEVICERALTKEYMASK, from IOLLEvent.h.
+            side_mask = 0x20 if keycode == LEFT_OPTION_KEYCODE else 0x40
+            if self._wait_release:
+                if not flags & Quartz.kCGEventFlagMaskAlternate:
+                    self._wait_release = False
                 return event
-            try:
-                # flagsChanged already describes the modifier state after this
-                # physical transition. Reading the global source key state from
-                # inside the tap can lag on newer macOS releases and turn a
-                # push-to-talk key into apparent toggle behavior.
-                down = bool(
-                    Quartz.CGEventGetFlags(event) & Quartz.kCGEventFlagMaskAlternate
-                )
-            except (AttributeError, RuntimeError):
-                down = keycode not in self._pressed
+            if flags & 0x60:
+                down = bool(flags & side_mask)
+            else:
+                down = bool(flags & Quartz.kCGEventFlagMaskAlternate)
             if down and keycode not in self._pressed:
                 self._pressed.add(keycode)
-                self._enqueue(HotkeyAction.OPTION_DOWN)
-            elif not down and keycode in self._pressed:
+                if self._owner is None and (keycode == LEFT_OPTION_KEYCODE or self._allow_right_option()):
+                    self._owner = keycode
+                    self._enqueue(HotkeyAction.OPTION_DOWN)
+            elif not down:
                 self._pressed.discard(keycode)
-                self._enqueue(HotkeyAction.OPTION_UP)
-        elif event_type == Quartz.kCGEventKeyDown and keycode == ESCAPE_KEYCODE:
+                if self._owner == keycode:
+                    self._owner = None
+                    self._enqueue(HotkeyAction.OPTION_UP)
+        elif event_type == Quartz.kCGEventKeyDown and (keycode == ESCAPE_KEYCODE or self._owner is not None):
             self._enqueue(HotkeyAction.CANCEL)
         return event
 
@@ -161,9 +182,18 @@ class NativeHotkeyListener:
         try:
             while not self._stop.is_set():
                 Quartz.CFRunLoopRunInMode(Quartz.kCFRunLoopDefaultMode, 1.0, False)
+                if self._owner is not None and not Quartz.CGEventSourceKeyState(
+                    Quartz.kCGEventSourceStateCombinedSessionState, self._owner
+                ):
+                    self._discontinuity()
+                if self._wait_release and not Quartz.CGEventSourceFlagsState(
+                    Quartz.kCGEventSourceStateCombinedSessionState
+                ) & Quartz.kCGEventFlagMaskAlternate:
+                    self._wait_release = False
                 if not Quartz.CGEventTapIsEnabled(tap):
                     raise RuntimeError("event tap became disabled")
         finally:
+            self._discontinuity()
             self._set_health(False, "event tap stopped")
             try:
                 Quartz.CFRunLoopRemoveSource(run_loop, source, Quartz.kCFRunLoopCommonModes)

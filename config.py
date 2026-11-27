@@ -13,6 +13,8 @@ string, not a managed dictionary).
 from __future__ import annotations
 
 import json
+import logging
+import tempfile
 import os
 import threading
 from typing import Any, Dict
@@ -77,14 +79,11 @@ DEFAULTS: Dict[str, Any] = {
     # Physical Right Option (keycode 61) is deliberately opt-in.
     "allow_right_option": False,
     # ── Injection ────────────────────────────────────────────────
-    # "type"  — synthesized keystrokes (works in secure/password fields)
-    # "paste" — clipboard + Cmd-V (fast, but blocked in secure fields)
-    # "auto"  — type short text, paste anything over paste_threshold (§6)
+    # Verified ordinary fields support paste or process-directed Quartz Unicode.
     "injection_mode": "paste",
     "paste_restore_seconds": 0.35,
     "append_trailing_space": True,
-    # Abort injection if the user alt-tabbed away mid-transcription
-    # instead of spraying text into the wrong window (§6).
+    # Retained for older settings files. Destination validation is mandatory.
     "guard_focus_change": True,
     # ── UI ───────────────────────────────────────────────────────
     # 80ms == 12.5fps, visibly steppy next to Wispr Flow. 33ms == ~30fps
@@ -105,96 +104,140 @@ DEFAULTS: Dict[str, Any] = {
 }
 
 
+MODELS = tuple("mlx-community/whisper-" + suffix for suffix in
+               ("tiny.en-mlx", "small.en-mlx", "medium.en-mlx", "large-v3-mlx"))
+RANGES = {
+    "sample_rate": (16000, 16000), "hotkey_vk": (58, 58),
+    "min_recording_seconds": (0.01, 5), "max_recording_seconds": (1, 300),
+    "max_transcribe_seconds": (1, 300), "audio_blocksize": (0, 16384),
+    "silence_rms_threshold": (0, 1), "trim_threshold": (0, 1),
+    "vad_frame_ms": (1, 100), "vad_padding_ms": (0, 1000), "vad_min_speech_ms": (1, 1000),
+    "decode_temperature": (0, 1), "max_no_speech_prob": (0, 1), "min_avg_logprob": (-20, 0),
+    "paste_restore_seconds": (0.35, 10), "refresh_interval": (0.02, 1),
+    "idle_refresh_interval": (0.1, 5), "history_size": (1, 100), "history_max_age_hours": (1, 168),
+}
+
+
+def valid_setting(key, value):
+    default = DEFAULTS[key]
+    if key in RANGES:
+        lo, hi = RANGES[key]
+        if type(value) not in (int, float) or not lo <= value <= hi:
+            return False
+        return type(default) is not int or type(value) is int
+    if key == "model":
+        return value in MODELS
+    if key == "option_key_mode":
+        return value in ("hold", "toggle")
+    if key == "injection_mode":
+        return value in ("paste", "unicode")
+    if key == "input_device":
+        return value is None or type(value) is int and value >= 0 or isinstance(value, str) and len(value) <= 256
+    if key == "language":
+        return value is None or isinstance(value, str) and value.isascii() and value.isalpha() and len(value) <= 20
+    return type(value) is type(default)
+
+
 class Settings:
-    """Thread-safe, JSON-backed settings with atomic writes."""
+    """Serialize validation, atomic replacement and publication under one lock."""
 
     def __init__(self, path: str | None = None):
         self._path = path or support_path("settings.json")
-        self._lock = threading.Lock()
-        self._values: Dict[str, Any] = dict(DEFAULTS)
+        self._lock = threading.RLock()
+        self._values = dict(DEFAULTS)
+        self.error = ""
+        self._read_only = False
         self.load()
 
     @property
-    def path(self) -> str:
+    def path(self):
         return self._path
 
-    def load(self) -> None:
-        migrated = False
+    def load(self):
+        with self._lock:
+            try:
+                with open(self._path, encoding="utf-8") as stream:
+                    stored = json.load(stream)
+                if not isinstance(stored, dict):
+                    raise ValueError("Expected settings object")
+                schema = stored.get("settings_schema_version", 1)
+                if type(schema) is not int or not 1 <= schema <= DEFAULTS["settings_schema_version"]:
+                    raise ValueError("Unsupported settings schema")
+            except FileNotFoundError:
+                return
+            except (OSError, ValueError) as exc:
+                self._read_only = True
+                self.error = "Settings unreadable or unsupported. Repair settings.json to save preferences."
+                logging.getLogger(__name__).warning("Settings load failed (%s)", type(exc).__name__)
+                return
+            values = dict(DEFAULTS)
+            invalid = []
+            for key in stored.keys() & DEFAULTS.keys():
+                if valid_setting(key, stored[key]):
+                    values[key] = stored[key]
+                else:
+                    invalid.append(key)
+            if schema < 2:
+                for key in ("silence_rms_threshold", "trim_threshold", "vad_frame_ms", "vad_padding_ms", "vad_min_speech_ms"):
+                    values[key] = DEFAULTS[key]
+            if schema < 4:
+                values["settings_schema_version"] = DEFAULTS["settings_schema_version"]
+            if values["min_recording_seconds"] > values["max_recording_seconds"]:
+                values["min_recording_seconds"] = DEFAULTS["min_recording_seconds"]
+                invalid.append("min_recording_seconds")
+            self._values = values
+            self._read_only = False
+            self.error = "Invalid settings used defaults: " + ", ".join(sorted(invalid)) if invalid else ""
+            if schema < DEFAULTS["settings_schema_version"]:
+                try:
+                    self.save()
+                except OSError:
+                    pass
+
+    def _persist(self, values):
+        if self._read_only:
+            raise OSError(self.error)
+        tmp = None
         try:
-            with open(self._path, "r", encoding="utf-8") as fh:
-                stored = json.load(fh)
-            if isinstance(stored, dict):
-                with self._lock:
-                    # Unknown keys from an older/newer build are ignored
-                    # rather than crashing startup.
-                    for key, value in stored.items():
-                        if key in DEFAULTS:
-                            self._values[key] = value
-                    schema = int(stored.get("settings_schema_version", 1))
-                    if schema < 2:
-                        # Version 1 persisted the original whole-buffer silence
-                        # thresholds. They are incompatible with the frame-based
-                        # VAD and caused observed RMS 0.002 speech to be dropped.
-                        for key in (
-                            "silence_rms_threshold",
-                            "trim_threshold",
-                            "vad_frame_ms",
-                            "vad_padding_ms",
-                            "vad_min_speech_ms",
-                        ):
-                            self._values[key] = DEFAULTS[key]
-                        if self._values.get("injection_mode") == "auto":
-                            self._values["injection_mode"] = "paste"
-                        self._values["settings_schema_version"] = 2
-                        migrated = True
-                    if schema < 3:
-                        # Version 3 is the explicit low-latency profile requested
-                        # for push-to-talk dictation.
-                        if self._values.get("model") == "mlx-community/whisper-medium.en-mlx":
-                            self._values["model"] = DEFAULTS["model"]
-                        self._values["decode_temperature"] = DEFAULTS["decode_temperature"]
-                        self._values["settings_schema_version"] = 3
-                        migrated = True
-                    if schema < 4:
-                        self._values["option_key_mode"] = "hold"
-                        self._values["settings_schema_version"] = 4
-                        migrated = True
-        except FileNotFoundError:
-            pass
-        except Exception:
-            # A corrupt settings file must never stop the app booting.
-            pass
-        if migrated:
-            self.save()
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(os.path.abspath(self.path)), delete=False) as stream:
+                tmp = stream.name
+                json.dump(values, stream, indent=2, sort_keys=True, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp, self.path)
+        except OSError:
+            self.error = "Could not save settings. Check Application Support permissions."
+            raise
+        finally:
+            if tmp and os.path.exists(tmp):
+                os.unlink(tmp)
 
-    def save(self) -> None:
+    def save(self):
         with self._lock:
-            snapshot = dict(self._values)
-        tmp = f"{self._path}.tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(snapshot, fh, indent=2, sort_keys=True)
-            os.replace(tmp, self._path)
-        except Exception:
-            pass
+            self._persist(self._values)
 
-    def get(self, key: str) -> Any:
+    def get(self, key):
         with self._lock:
-            return self._values.get(key, DEFAULTS.get(key))
+            return self._values.get(key)
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key, value):
+        if key not in DEFAULTS or not valid_setting(key, value):
+            raise ValueError("Unsupported preference")
         with self._lock:
-            self._values[key] = value
-        self.save()
+            values = {**self._values, key: value}
+            if values["min_recording_seconds"] > values["max_recording_seconds"]:
+                raise ValueError("Minimum duration exceeds recording limit")
+            self._persist(values)
+            self._values = values
+            self.error = ""
 
-    def toggle(self, key: str) -> bool:
+    def toggle(self, key):
         with self._lock:
-            value = not bool(self._values.get(key))
-            self._values[key] = value
-        self.save()
-        return value
+            value = not self.get(key)
+            self.set(key, value)
+            return value
 
-    def as_dict(self) -> Dict[str, Any]:
+    def as_dict(self):
         with self._lock:
             return dict(self._values)
 
@@ -210,7 +253,7 @@ def vocabulary_path() -> str:
     return support_path("vocabulary.txt")
 
 
-def load_vocabulary() -> str:
+def load_vocabulary(strict=False) -> str:
     """Custom vocabulary as an editable file rather than a string literal.
 
     Fed to Whisper as initial_prompt. One term per line or comma
@@ -220,15 +263,16 @@ def load_vocabulary() -> str:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             raw = fh.read().strip()
-        if raw:
-            terms = [t.strip() for t in raw.replace("\n", ",").split(",")]
-            return ", ".join(t for t in terms if t)
+        terms = [term.strip() for term in raw.replace("\n", ",").split(",")]
+        return ", ".join(term for term in terms if term)
     except FileNotFoundError:
         try:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(DEFAULT_VOCABULARY + "\n")
-        except Exception:
-            pass
-    except Exception:
-        pass
+        except OSError:
+            if strict:
+                raise
+    except (OSError, UnicodeError):
+        if strict:
+            raise
     return DEFAULT_VOCABULARY

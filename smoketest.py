@@ -71,7 +71,12 @@ def main() -> int:
         status = json.loads(status_path.read_text(encoding="utf-8"))
         age = time.time() - float(status["written_at"])
         exact_bundle = status["identity"]["bundle_id"] == BUNDLE_ID
-        report.check("live app health", age < 15 and exact_bundle, f"age={age:.1f}s bundle={status['identity']['bundle_id']}")
+        pid = int(status["identity"]["pid"])
+        if pid <= 0:
+            raise ValueError("Invalid status process")
+        os.kill(pid, 0)
+        same_build = status["identity"]["fingerprint"] == identity["fingerprint"]
+        report.check("live app health", 0 <= age < 35 and exact_bundle and same_build, f"age={age:.1f}s bundle={status['identity']['bundle_id']}")
         for key, label in (
             ("microphone", "Microphone permission"),
             ("accessibility", "Accessibility permission"),

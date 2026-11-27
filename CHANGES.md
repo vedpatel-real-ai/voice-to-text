@@ -1,8 +1,13 @@
 # VoiceToText change history
 
-> Historical note: the material below describes 2.0 and is not current
-> installation or verification guidance. See `README.md` and
-> `PRODUCTION_AUDIT.md` for VoiceToText 3.0.
+For current installation and usage, see the [README](README.md). The 2.0 entries below preserve historical behavior and setup instructions.
+
+## 3.0.2 — dictation destination compatibility
+
+- Request accessibility metadata from lazy editor hosts when supported, including during activation in ChatGPT, Chrome and VS Code.
+- Verify ordinary editors that omit optional attributes using positive evidence of editability, the focused window and the selection. Preserve checks for Secure Input, protected fields, destination changes and stale sessions.
+- Preserve deliberately empty vocabulary across reload and restart.
+- Add native accessibility regressions and controlled delivery checks. [Release notes](docs/engineering-implementation/release-3.0.2.md)
 
 ## 3.0.0 — native hotkey/insertion and serialized inference
 

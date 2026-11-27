@@ -12,7 +12,7 @@ testing. It does not claim the complete real-Mac acceptance matrix passed.
 |---|---|---|---|
 | Critical | `crash.log` shows simultaneous native MLX stacks: startup warm-up at `transcription.py:115` and real inference at `:173`, ending in a segmentation fault. | Explicit `ModelState`; one operation lock around every MLX call; generation-bound model changes; stale warm-up completion cannot mark another model ready. | Concurrent warm-up/transcription test proves max one model call; 29-test suite passes. Native benchmark ran sequentially without a crash. |
 | Critical | Historical crash in `pynput.keyboard.Controller()` → Darwin TIS layout mapping from a worker. Current source still used pynput for listening and output. | Removed pynput from production dependencies/runtime. Native listen-only Quartz event tap plus native Quartz paste/Unicode events. | No production pynput import. Event dedup/right-Option tests pass. Live tap check remains in smoke/manual acceptance. |
-| High | Installed app was an alias to `/Users/vedpatel/voice-to-text`, while supplied source was `/Users/vedpatel/Desktop/voice-to-text`; three divergent copies existed. Bundle used Miniconda Python 3.13.12. | Startup logs version, source fingerprint, resolved source/executable, bundle ID/path, Python, and architecture. Installer creates one pinned runtime path and one app. | Old bundle inspection and source SHA-256 comparison captured the mismatch. The clean-installed runtime fingerprint now matches the audited source. |
+| High | Installed app was an alias to `~/voice-to-text`, while supplied source was `~/Desktop/voice-to-text`; three divergent copies existed. Bundle used Miniconda Python 3.13.12. | Startup logs version, source fingerprint, resolved source/executable, bundle ID/path, Python, and architecture. Installer creates one pinned runtime path and one app. | Old bundle inspection and source SHA-256 comparison captured the mismatch. The clean-installed runtime fingerprint now matches the audited source. |
 | High | Event callback directly started/stopped PortAudio and called `NSSound`; listener restart claim contradicted one-shot `join()`. | Event callback only deduplicates/enqueues. Dispatcher schedules main-run-loop session work; serialized audio worker owns PortAudio. Event tap retries with capped backoff and re-enables timeout/user-input disables. | Duplicate event/controller tests pass. Live listener fault recovery is manual. |
 | High | Focus was captured by a 33 ms UI poll; stale async results had no generation identity. | Main-run-loop Option-down captures PID/name and creates a session generation before audio work. Every async completion verifies session/state. | End-to-end fake pipeline and stale-result suppression tests pass. |
 | High | Main-thread insertion slept 50 ms, typed short strings character-by-character, preserved only clipboard text, and restored unconditionally. | Async 35 ms run-loop scheduling; Cmd-V default; full item/type/data snapshot; restore only if `changeCount` matches; Quartz Unicode fallback; native Cmd-Z. | Focus guard, strategy, and non-text snapshot tests pass. Live app matrix is manual. |
@@ -55,8 +55,7 @@ enough evidence that small.en preserves the user's natural-voice accuracy.
 Model selection remains configurable; benchmark real user audio before changing
 the accuracy default.
 
-Raw generated-speech metrics are in `benchmark-small.json` and
-`benchmark-medium.json`.
+The aggregate figures above summarize the historical generated-speech run. See [current benchmark methodology](docs/BENCHMARKS.md) for the reproducible public-fixture comparison.
 
 ## Automated verification
 
@@ -102,9 +101,9 @@ production-ready.
 
 Observed historical copies:
 
-- `/Users/vedpatel/voice-to-text` (installed alias target, Miniconda)
-- `/Users/vedpatel/Desktop/voice-to-text` (audited source)
-- `/Users/vedpatel/Desktop/My-Software/voice-to-text`
+- `~/voice-to-text` (installed alias target, Miniconda)
+- `~/Desktop/voice-to-text` (audited source)
+- `~/Desktop/My-Software/voice-to-text`
 - root-level `.voicetotext.lock`, `venv`, `build`, `dist`, `__pycache__`, and
   backup source files in historical copies
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import hashlib
 import math
 import threading
 import time
@@ -72,6 +74,40 @@ def _segment_stats(result: Dict[str, Any]) -> Tuple[Optional[float], Optional[fl
     return mean_ns, mean_lp
 
 
+# Audited local conversions. Paths supplied by benchmark fixtures already identify a snapshot.
+MODEL_ASSETS = {
+    "mlx-community/whisper-small.en-mlx": (
+        "52a88bf6e98b114a210c21bb83e22d6e1505cb73",
+        "40028e43687458e79ba89cc16bf14184c5414a5cbc00fd511f8f78d138647afd",
+        "1bb29b030aca711a035f7a084a0eefac6251ecc2bdd356fa748858fbad082f5a"),
+    "mlx-community/whisper-medium.en-mlx": (
+        "8d0335069b551e8586b8a4680674403d9417dfe4",
+        "20f1b6b70cab52e6669c2a095fd3bcc16aa25c7e367d29060f876d4728832b45",
+        "66cda8c3df03af0b922764620d46734240ab82c54348c5848238c8604bdadbdb"),
+}
+
+
+def cached_model(model):
+    if Path(model).is_dir():
+        return model
+    from huggingface_hub import snapshot_download
+    assets = MODEL_ASSETS.get(model)
+    path = Path(snapshot_download(model, revision=assets[0] if assets else None, local_files_only=True))
+    if assets:
+        if (path / "weights.safetensors").exists():
+            raise ValueError("Unexpected alternate weights")
+        for name, expected in zip(("config.json", "weights.npz"), assets[1:]):
+            with (path / name).open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != expected:
+                    raise ValueError("Model checksum mismatch")
+    return str(path)
+
+
+def clear_model_cache():
+    import mlx.core as mx
+    mx.clear_cache()
+
+
 class Transcriber:
     """Owns model selection and guarantees only one MLX call at a time."""
 
@@ -85,6 +121,7 @@ class Transcriber:
         self._ready_model: Optional[str] = None
         self._state = ModelState.LOADING
         self._error = ""
+        self._loaded_path = None
 
     @property
     def ready(self) -> bool:
@@ -134,19 +171,24 @@ class Transcriber:
         sample_rate = int(self._settings.get("sample_rate"))
         started = time.perf_counter()
         try:
+            path = cached_model(model)
+            previous = self._loaded_path
             mlx_whisper.transcribe(
                 np.zeros(sample_rate, dtype=np.float32),
-                path_or_hf_repo=model,
+                path_or_hf_repo=path,
                 condition_on_previous_text=False,
             )
+            self._loaded_path = path
+            if previous and previous != path:
+                clear_model_cache()
         except Exception as exc:
             elapsed = time.perf_counter() - started
             with self._state_lock:
                 if generation == self._generation and model == self._desired_model:
                     self._state = ModelState.FAILED
                     self._ready_model = None
-                    self._error = f"{type(exc).__name__}: {exc}"
-            log.exception("model warm-up failed after %.2fs (%s)", elapsed, model)
+                    self._error = "Cannot load the selected local model. Check its cache and checksum."
+            log.error("Model warm-up failed after %.2fs (%s)", elapsed, type(exc).__name__)
             return False
         elapsed = time.perf_counter() - started
         latency.record("warmup", elapsed)
@@ -209,7 +251,7 @@ class Transcriber:
             # cannot mutate the model being used by this inference.
             with self._state_lock:
                 vocabulary = self._vocabulary
-            return self._transcribe_locked(analysis.audio, sample_rate, model, vocabulary)
+            return self._transcribe_locked(analysis.audio, sample_rate, self._loaded_path, vocabulary)
 
     def _transcribe_locked(
         self, audio: np.ndarray, sample_rate: int, model: str, vocabulary: str
@@ -234,8 +276,8 @@ class Transcriber:
             result = mlx_whisper.transcribe(audio, **kwargs)
         except Exception as exc:
             elapsed = time.perf_counter() - started
-            log.exception("transcription failed after %.2fs", elapsed)
-            return Transcript(Outcome.ERROR, detail=f"{type(exc).__name__}: {exc}", seconds=elapsed)
+            log.error("Transcription failed after %.2fs (%s)", elapsed, type(exc).__name__)
+            return Transcript(Outcome.ERROR, detail="Local inference failed", seconds=elapsed)
 
         elapsed = time.perf_counter() - started
         latency.record("transcribe", elapsed)
